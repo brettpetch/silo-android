@@ -108,16 +108,13 @@ android {
             enableSplit = true
         }
     }
-    // Per-ABI APKs for sideload QA (one per arch + a universal). Matches
-    // the device-matrix QA procedure in
-    // docs/plans/ffmpeg-audio-extension-plan.md Phase 4. `isUniversalApk`
-    // keeps the all-ABIs APK around for dev convenience.
+    // Disable APK ABI splits for local/CI packaging. The global split
+    // configuration was causing :androidApp:packageDebug to fail in GitHub
+    // Actions while assembling debug + release in the same workflow. Keep
+    // App Bundle ABI splitting enabled above for Play delivery.
     splits {
         abi {
-            isEnable = true
-            reset()
-            include("arm64-v8a", "armeabi-v7a", "x86_64")
-            isUniversalApk = true
+            isEnable = false
         }
     }
     compileOptions {
