@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- libmpv declares minSdk 26. ContinuumPlaybackService gates MPV creation
+         to API 26+ and uses Media3 on Android 7/API 24-25. -->
+    <uses-sdk tools:overrideLibrary="dev.jdtech.mpv" />
 
     <!-- This is a TV-first app: leanback is required, touchscreen is optional. -->
     <uses-feature
@@ -14,6 +19,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
+    <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
 
     <application
         android:name=".ContinuumTvApplication"
@@ -35,15 +42,44 @@
                 <!-- TV launchers use LEANBACK_LAUNCHER instead of LAUNCHER. -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="continuum" />
+                <!-- Device-pairing links from the `silo` scheme (e.g.
+                     silo://device?token=…) so a QR/login flow on another
+                     device can hand off to this TV for approval. -->
+                <data android:scheme="silo" />
+            </intent-filter>
         </activity>
 
+        <!-- Media3 documents this as an exported service so system media
+             controllers can discover and bind to the app session. -->
         <service
             android:name="com.continuum.app.common.player.ContinuumPlaybackService"
             android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
+            android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- Disable WorkManager's androidx.startup auto-init so our explicit
+             `WorkManager.initialize(this, workManagerConfiguration)` call in
+             ContinuumTvApplication.onCreate wins with TvWorkerFactory wired
+             in. Otherwise auto-init runs first with the default reflection
+             factory and WatchNextSyncWorker can never be instantiated. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
     </application>
 </manifest>

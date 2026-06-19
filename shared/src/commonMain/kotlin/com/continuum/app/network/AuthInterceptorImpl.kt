@@ -5,7 +5,6 @@ import io.ktor.client.call.*
 import io.ktor.client.plugins.api.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
-import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -46,6 +45,40 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
     val refreshMutex = Mutex()
 
     onRequest { request, _ ->
+        // Pinned (Track B outbox replay): bind this request to a captured scope
+        // regardless of the globally-active server/profile, so a mid-drain switch
+        // can't send it to the wrong account. Uses the snapshot's URL/profile and
+        // the *live* per-server access token (handles rotation).
+        val pinned = request.attributes.getOrNull(AuthScopeAttributeKey)
+        if (pinned != null) {
+            if (request.url.encodedPath.startsWith("/api/") && pinned.serverUrl.isNotBlank()) {
+                val originalPath = request.url.encodedPath
+                val originalParameters = request.url.parameters.build()
+                val originalFragment = request.url.fragment
+                request.url.takeFrom(pinned.serverUrl)
+                request.url.encodedPath = originalPath
+                request.url.parameters.clear()
+                request.url.parameters.appendAll(originalParameters)
+                request.url.fragment = originalFragment
+            }
+            // Replace (never append) the scoped headers; clear the profile token
+            // header when the snapshot has none.
+            request.headers.remove(HttpHeaders.Authorization)
+            tokenManager.getAccessTokenForScope(pinned.serverId)?.let { token ->
+                request.header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            request.headers.remove("X-Profile-Id")
+            pinned.profileId?.let { request.header("X-Profile-Id", it) }
+            request.headers.remove("X-Profile-Token")
+            pinned.profileToken?.let { request.header("X-Profile-Token", it) }
+            deviceMetadataProvider?.current()?.let { device ->
+                request.header("X-Silo-Device-Id", device.id)
+                request.header("X-Silo-Device-Name", device.name)
+                request.header("X-Silo-Device-Platform", device.platform)
+            }
+            return@onRequest
+        }
+
         // Shared API calls use relative paths; bind them to the configured server URL
         // before the request is sent so Ktor doesn't fall back to localhost on iOS.
         if (request.url.encodedPath.startsWith("/api/") && request.url.host == "localhost") {
@@ -89,6 +122,61 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
     }
 
     on(Send) { request ->
+        // Pinned scope (Track B): refresh against the *captured* scope, never the
+        // active one, and never invalidate the active UI session — a failed
+        // pinned refresh just surfaces the 401 so the outbox keeps the op.
+        val pinnedScope = request.attributes.getOrNull(AuthScopeAttributeKey)
+        if (pinnedScope != null) {
+            val sentAuth = request.headers[HttpHeaders.Authorization]
+            val originalCall = proceed(request)
+            if (originalCall.response.status != HttpStatusCode.Unauthorized) {
+                return@on originalCall
+            }
+            val refreshed = refreshMutex.withLock {
+                // Another path may have refreshed this scope while we waited.
+                val current = tokenManager.getAccessTokenForScope(pinnedScope.serverId)?.let { "Bearer $it" }
+                if (current != null && current != sentAuth) {
+                    return@withLock true
+                }
+                val refreshToken = tokenManager.getRefreshTokenForScope(pinnedScope.serverId)
+                if (refreshToken.isNullOrBlank() || pinnedScope.serverUrl.isBlank()) {
+                    return@withLock false
+                }
+                try {
+                    val refreshResponse = client.post("${pinnedScope.serverUrl}/api/v1/auth/refresh") {
+                        contentType(ContentType.Application.Json)
+                        setBody(RefreshRequest(refreshToken))
+                    }
+                    if (refreshResponse.status.isSuccess()) {
+                        val tokens = refreshResponse.body<RefreshResponse>()
+                        tokenManager.saveTokensForScope(
+                            serverId = pinnedScope.serverId,
+                            accessToken = tokens.accessToken,
+                            refreshToken = tokens.refreshToken,
+                            expiresIn = tokens.expiresIn,
+                        )
+                        true
+                    } else {
+                        // Don't invalidate the active session for a background scope.
+                        // Re-check in case a concurrent path refreshed it in flight.
+                        val after = tokenManager.getAccessTokenForScope(pinnedScope.serverId)?.let { "Bearer $it" }
+                        after != null && after != sentAuth
+                    }
+                } catch (e: Throwable) {
+                    false
+                }
+            }
+            return@on if (refreshed) {
+                tokenManager.getAccessTokenForScope(pinnedScope.serverId)?.let { newToken ->
+                    request.headers.remove(HttpHeaders.Authorization)
+                    request.header(HttpHeaders.Authorization, "Bearer $newToken")
+                }
+                proceed(request)
+            } else {
+                originalCall
+            }
+        }
+
         // Capture the access token we will actually SEND with this request.
         // If the response comes back 401, we compare against this snapshot
         // inside the refresh mutex to detect a concurrent refresh that
@@ -125,8 +213,6 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
             // server anyway, and we'd risk persisting cross-server tokens.
             val serverIdNow = tokenManager.getCurrentServerId()
             if (serverIdNow != serverIdBeforeRequest) {
-                println("[SiloAuth] Refresh skipped: server switched mid-request " +
-                    "(was=$serverIdBeforeRequest now=$serverIdNow)")
                 return@withLock false
             }
 
@@ -139,14 +225,12 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
 
             val refreshToken = tokenManager.getRefreshToken()
             if (refreshToken.isNullOrBlank()) {
-                println("[SiloAuth] Refresh skipped: no refresh token stored")
                 return@withLock false
             }
 
             try {
                 val serverUrl = tokenManager.getServerUrl()
                 if (serverUrl.isBlank()) {
-                    println("[SiloAuth] Refresh skipped: no server URL configured")
                     return@withLock false
                 }
 
@@ -162,8 +246,6 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
                 // slot.
                 val serverIdAfterCall = tokenManager.getCurrentServerId()
                 if (serverIdAfterCall != serverIdBeforeRequest) {
-                    println("[SiloAuth] Refresh response discarded: server switched " +
-                        "during network call (was=$serverIdBeforeRequest now=$serverIdAfterCall)")
                     return@withLock false
                 }
 
@@ -176,24 +258,15 @@ val ContinuumAuthPlugin = createClientPlugin("ContinuumAuthPlugin", ::ContinuumA
                     )
                     true
                 } else {
-                    // Refresh failed — log the status so we can see session-expired
-                    // vs server errors, then invalidate the session. The
-                    // [TokenManager.sessionExpired] event emitted by this call is
-                    // what the root NavHost observer uses to route the user back
-                    // to the login screen; without it, the UI would stay on Home
-                    // and keep rendering "Failed to load…" for every subsequent
-                    // API call that now has no credentials.
-                    val body = runCatching { refreshResponse.bodyAsText() }.getOrNull().orEmpty()
-                    println(
-                        "[SiloAuth] Refresh failed: " +
-                            "status=${refreshResponse.status} body=$body"
-                    )
+                    // The [TokenManager.sessionExpired] event emitted by this
+                    // call is what the root NavHost observer uses to route the
+                    // user back to the login screen; without it, the UI would
+                    // stay on Home and keep rendering "Failed to load..." for
+                    // every subsequent API call that now has no credentials.
                     tokenManager.invalidateSession()
                     false
                 }
             } catch (e: Throwable) {
-                // Surface the real cause — silent catches make auth bugs impossible to debug.
-                println("[SiloAuth] Refresh threw: ${e::class.simpleName}: ${e.message}")
                 false
             }
         }

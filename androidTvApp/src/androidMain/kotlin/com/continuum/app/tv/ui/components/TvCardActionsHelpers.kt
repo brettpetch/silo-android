@@ -27,39 +27,44 @@ fun rememberTvBrowseItemCardActions(
     val coordinator: MediaActionsCoordinator = koinInject()
     val scope = rememberCoroutineScope()
 
-    var state by remember(item.contentId) {
+    // Key on userState too (phone parity): when refreshed data re-emits with a
+    // changed userState, the card must reflect new watched/favorite/watchlist
+    // badges instead of keeping the stale snapshot.
+    var state by remember(item.contentId, item.userState) {
         mutableStateOf(item.userState ?: MediaItemUserState())
     }
 
-    val actions = TvMediaCardActions(
-        onSetWatched = { watched ->
-            val previous = state
-            state = state.copy(played = watched)
-            scope.launch {
-                if (coordinator.setWatched(item.contentId, watched) !is ApiResult.Success) {
-                    state = previous
+    val actions = remember(item.contentId, coordinator, scope) {
+        TvMediaCardActions(
+            onSetWatched = { watched ->
+                val previous = state
+                state = state.copy(played = watched)
+                scope.launch {
+                    if (coordinator.setWatched(item.contentId, watched) !is ApiResult.Success) {
+                        state = previous
+                    }
                 }
-            }
-        },
-        onToggleFavorite = { favorite ->
-            val previous = state
-            state = state.copy(isFavorite = favorite)
-            scope.launch {
-                if (coordinator.toggleFavorite(item.contentId, favorite) !is ApiResult.Success) {
-                    state = previous
+            },
+            onToggleFavorite = { favorite ->
+                val previous = state
+                state = state.copy(isFavorite = favorite)
+                scope.launch {
+                    if (coordinator.toggleFavorite(item.contentId, favorite) !is ApiResult.Success) {
+                        state = previous
+                    }
                 }
-            }
-        },
-        onToggleWatchlist = { inWatchlist ->
-            val previous = state
-            state = state.copy(inWatchlist = inWatchlist)
-            scope.launch {
-                if (coordinator.toggleWatchlist(item.contentId, inWatchlist) !is ApiResult.Success) {
-                    state = previous
+            },
+            onToggleWatchlist = { inWatchlist ->
+                val previous = state
+                state = state.copy(inWatchlist = inWatchlist)
+                scope.launch {
+                    if (coordinator.toggleWatchlist(item.contentId, inWatchlist) !is ApiResult.Success) {
+                        state = previous
+                    }
                 }
-            }
-        },
-    )
+            },
+        )
+    }
 
     return actions to state
 }

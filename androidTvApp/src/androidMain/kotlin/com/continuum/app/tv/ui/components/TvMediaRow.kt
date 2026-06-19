@@ -9,19 +9,40 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.ExperimentalComposeUiApi
 import com.continuum.app.model.section.SectionItem
+import com.continuum.app.overlays.OverlayData
+import com.continuum.app.overlays.OverlayDataExtractor
 import com.continuum.app.tv.ui.theme.Spacing
 
 /** Visual style of cards inside a [TvMediaRow]. */
 enum class TvRowStyle { Poster, Backdrop }
 enum class TvRowCardLayout { Default, ReferenceShelf }
+
+private data class TvMediaRowItemModel(
+    val item: SectionItem,
+    val progress: Float?,
+    val remainingMinutes: Int?,
+    val backdropUrl: String?,
+    val backdropThumbhash: String?,
+    val shelfTitle: String,
+    val shelfSubtitle: String?,
+    val overlay: OverlayData,
+    val contentType: String,
+)
 
 /**
  * Horizontal row with a header and a lazy list of cards. This is the workhorse
@@ -53,16 +74,39 @@ fun TvMediaRow(
     itemSpacing: androidx.compose.ui.unit.Dp = 20.dp,
     rowTopPadding: androidx.compose.ui.unit.Dp = 24.dp,
     rowBottomPadding: androidx.compose.ui.unit.Dp = 24.dp,
+    posterWidth: androidx.compose.ui.unit.Dp? = null,
     eyebrow: String? = null,
+    /** When false, the built-in [TvSectionHeader] is omitted so callers can supply
+     *  their own header above a bare rail (e.g. the detail "More Like This" rail). */
+    showHeader: Boolean = true,
     itemCardModifier: Modifier = Modifier,
     upFocusRequester: FocusRequester? = null,
+    onDirectionUp: (() -> Boolean)? = null,
     firstItemFocusRequester: FocusRequester? = null,
     firstItemFocusRequest: Int = 0,
     firstItemCardModifier: Modifier = Modifier,
+    /** Fired (on focus GAIN only) with whichever card the user focuses, so the
+     *  Skyline marquee + backdrop can preview the focused item. */
+    onItemFocused: ((SectionItem) -> Unit)? = null,
     cardActions: (SectionItem) -> TvMediaCardActions = { TvMediaCardActions() },
 ) {
     if (items.isEmpty()) return
     val rowState = rememberLazyListState()
+    val rowItems = remember(items, showProgress, style, cardLayout) {
+        items.map { item ->
+            TvMediaRowItemModel(
+                item = item,
+                progress = if (showProgress) item.progressFraction() else null,
+                remainingMinutes = if (showProgress) item.remainingMinutes() else null,
+                backdropUrl = item.bestBackdropUrl(),
+                backdropThumbhash = item.bestBackdropThumbhash(),
+                shelfTitle = item.shelfTitle(showProgress = showProgress),
+                shelfSubtitle = item.shelfSubtitle(showProgress = showProgress),
+                overlay = OverlayDataExtractor.fromSectionItem(item),
+                contentType = "${cardLayout.name}:${style.name}:${item.type}",
+            )
+        }
+    }
 
     LaunchedEffect(firstItemFocusRequest) {
         if (firstItemFocusRequest > 0 && firstItemFocusRequester != null) {
@@ -74,13 +118,15 @@ fun TvMediaRow(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TvSectionHeader(
-            title = title,
-            icon = icon,
-            onSeeAllClick = onSeeAllClick,
-            eyebrow = eyebrow,
-            modifier = Modifier.padding(start = startPadding, end = endPadding),
-        )
+        if (showHeader) {
+            TvSectionHeader(
+                title = title,
+                icon = icon,
+                onSeeAllClick = onSeeAllClick,
+                eyebrow = eyebrow,
+                modifier = Modifier.padding(start = startPadding, end = endPadding),
+            )
+        }
         LazyRow(
             state = rowState,
             // focusRestorer remembers the last-focused card inside this row.
@@ -101,9 +147,12 @@ fun TvMediaRow(
                 bottom = rowBottomPadding,
             ),
         ) {
-            itemsIndexed(items, key = { _, item -> item.contentId }) { index, item ->
-                val progress = if (showProgress) item.progressFraction() else null
-                val remaining = if (showProgress) item.remainingMinutes() else null
+            itemsIndexed(
+                items = rowItems,
+                key = { _, rowItem -> rowItem.item.contentId },
+                contentType = { _, rowItem -> rowItem.contentType },
+            ) { index, rowItem ->
+                val item = rowItem.item
                 // Always anchor firstItemFocusRequester to index 0 so it can
                 // serve as a stable fallback target for focusRestorer and for
                 // imperative requestFocus() calls from parent screens.
@@ -111,8 +160,28 @@ fun TvMediaRow(
                 val appliedCardModifier = itemCardModifier.then(
                     if (index == 0) firstItemCardModifier else Modifier,
                 ).then(
+                    if (onDirectionUp != null) {
+                        Modifier.onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
+                                onDirectionUp?.invoke() ?: false
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        Modifier
+                    },
+                ).then(
                     if (upFocusRequester != null) {
                         Modifier.focusProperties { up = upFocusRequester }
+                    } else {
+                        Modifier
+                    },
+                ).then(
+                    if (onItemFocused != null) {
+                        Modifier.onFocusChanged { st ->
+                            if (st.isFocused) onItemFocused(item)
+                        }
                     } else {
                         Modifier
                     },
@@ -120,12 +189,12 @@ fun TvMediaRow(
                 val itemActions = cardActions(item)
                 when (cardLayout) {
                     TvRowCardLayout.ReferenceShelf -> TvReferenceShelfCard(
-                        title = item.shelfTitle(showProgress = showProgress),
-                        imageUrl = item.bestBackdropUrl(),
-                        imageThumbhash = item.bestBackdropThumbhash(),
-                        subtitle = item.shelfSubtitle(showProgress = showProgress),
-                        detail = if (showProgress) remaining?.let { "${it}m left" } else null,
-                        progress = progress,
+                        title = rowItem.shelfTitle,
+                        imageUrl = rowItem.backdropUrl,
+                        imageThumbhash = rowItem.backdropThumbhash,
+                        subtitle = rowItem.shelfSubtitle,
+                        detail = if (showProgress) rowItem.remainingMinutes?.let { "${it}m left" } else null,
+                        progress = rowItem.progress,
                         onClick = { onItemClick(item.contentId) },
                         focusRequester = itemFocusRequester,
                         cardModifier = appliedCardModifier,
@@ -135,17 +204,18 @@ fun TvMediaRow(
                     TvRowCardLayout.Default -> when (style) {
                         TvRowStyle.Backdrop -> TvEpisodeCard(
                             title = item.title,
-                            stillUrl = item.bestBackdropUrl(),
-                            stillThumbhash = item.bestBackdropThumbhash(),
+                            stillUrl = rowItem.backdropUrl,
+                            stillThumbhash = rowItem.backdropThumbhash,
                             seriesTitle = item.seriesTitle,
                             seasonNumber = item.seasonNumber,
                             episodeNumber = item.episodeNumber,
-                            progress = progress,
-                            remainingMinutes = remaining,
+                            progress = rowItem.progress,
+                            remainingMinutes = rowItem.remainingMinutes,
                             onClick = { onItemClick(item.contentId) },
                             focusRequester = itemFocusRequester,
                             cardModifier = appliedCardModifier,
                             userState = item.userState,
+                            overlay = rowItem.overlay,
                             actions = itemActions,
                         )
                         TvRowStyle.Poster -> TvMediaCard(
@@ -154,10 +224,13 @@ fun TvMediaRow(
                             posterThumbhash = item.posterThumbhash,
                             year = item.year.takeIf { it > 0 },
                             userState = item.userState,
-                            progress = progress,
+                            progress = rowItem.progress,
+                            mediaType = item.type,
+                            width = posterWidth ?: TvCardWidth,
                             onClick = { onItemClick(item.contentId) },
                             focusRequester = itemFocusRequester,
                             cardModifier = appliedCardModifier,
+                            overlay = rowItem.overlay,
                             actions = itemActions,
                         )
                     }
@@ -183,22 +256,13 @@ private fun SectionItem.remainingMinutes(): Int? {
     return ((dur - pos) / 60.0).toInt()
 }
 
-/**
- * Episodes have backdrop/still frames on `posterUrl`; movies have them on
- * `backdropUrl`. Prefer the more specific field when present.
- */
+/** Prefer wide artwork for 16:9 row cards, falling back to poster only if needed. */
 private fun SectionItem.bestBackdropUrl(): String? {
-    val isEpisode = seriesTitle != null
-    return if (isEpisode) posterUrl ?: backdropUrl else backdropUrl ?: posterUrl
+    return backdropUrl ?: posterUrl
 }
 
 private fun SectionItem.bestBackdropThumbhash(): String? {
-    val isEpisode = seriesTitle != null
-    return if (isEpisode) {
-        posterThumbhash ?: backdropThumbhash
-    } else {
-        backdropThumbhash ?: posterThumbhash
-    }
+    return backdropThumbhash ?: posterThumbhash
 }
 
 private fun SectionItem.shelfTitle(showProgress: Boolean): String {

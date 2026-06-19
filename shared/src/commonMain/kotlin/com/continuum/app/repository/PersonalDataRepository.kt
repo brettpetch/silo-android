@@ -9,15 +9,39 @@ import com.continuum.app.model.personal.UserLibrary
 import com.continuum.app.network.ApiResult
 import com.continuum.app.network.api.PersonalDataApi
 import com.continuum.app.network.map
+import com.continuum.app.repository.port.CatalogCachePort
+import com.continuum.app.repository.port.NoOpCatalogCachePort
+import com.continuum.app.repository.port.NoOpUserItemStatePort
+import com.continuum.app.repository.port.UserItemStatePort
+import com.continuum.app.repository.port.canServeCache
+import com.continuum.app.repository.port.toWriteOutcome
 
 open class PersonalDataRepository(
     private val personalDataApi: PersonalDataApi,
+    /**
+     * Local-first side-channel (Track B). Defaults to the no-op port so
+     * commonMain/tests stay network-only; the Android platform module binds a
+     * Room-backed [UserItemStatePort] that records an optimistic projection +
+     * outbox op around each content-level mutation below.
+     */
+    private val userItemStatePort: UserItemStatePort = NoOpUserItemStatePort,
+    /** Offline read cache for the library list (Track B). No-op by default. */
+    private val catalogCache: CatalogCachePort = NoOpCatalogCachePort,
 ) {
     // -- Libraries --
 
-    /** Lists the libraries visible to the current user. */
-    suspend fun listUserLibraries(): ApiResult<List<UserLibrary>> =
-        personalDataApi.listUserLibraries()
+    /** Lists the libraries visible to the current user (offline: last cached list). */
+    suspend fun listUserLibraries(): ApiResult<List<UserLibrary>> {
+        val result = personalDataApi.listUserLibraries()
+        if (result is ApiResult.Success) {
+            catalogCache.cacheLibraries(result.data)
+            return result
+        }
+        if (result.canServeCache()) {
+            catalogCache.getCachedLibraries()?.let { return ApiResult.Success(it) }
+        }
+        return result
+    }
 
     // -- Favorites --
 
@@ -33,12 +57,16 @@ open class PersonalDataRepository(
      * Adds or removes an item from the user's favorites.
      * @param isFavorite true to add, false to remove.
      */
-    suspend fun toggleFavorite(itemId: String, isFavorite: Boolean): ApiResult<Unit> =
-        if (isFavorite) {
-            personalDataApi.addFavorite(itemId)
+    suspend fun toggleFavorite(itemId: String, isFavorite: Boolean): ApiResult<Unit> {
+        val handle = userItemStatePort.recordFavorite(itemId, isFavorite)
+        val result = if (isFavorite) {
+            personalDataApi.addFavorite(itemId, handle.scope)
         } else {
-            personalDataApi.removeFavorite(itemId)
+            personalDataApi.removeFavorite(itemId, handle.scope)
         }
+        userItemStatePort.resolve(handle, result.toWriteOutcome())
+        return result
+    }
 
     // -- Watchlist --
 
@@ -87,13 +115,21 @@ open class PersonalDataRepository(
     suspend fun getRating(itemId: String): ApiResult<RatingEntry> =
         personalDataApi.getRating(itemId)
 
-    /** Sets or updates the user's rating for a specific item. */
-    suspend fun setRating(itemId: String, rating: Double): ApiResult<Unit> =
-        personalDataApi.setRating(itemId, rating)
+    /** Sets or updates the user's star rating (integer 1-5) for a specific item. */
+    suspend fun setRating(itemId: String, rating: Int): ApiResult<Unit> {
+        val handle = userItemStatePort.recordRating(itemId, rating)
+        val result = personalDataApi.setRating(itemId, rating, handle.scope)
+        userItemStatePort.resolve(handle, result.toWriteOutcome())
+        return result
+    }
 
     /** Removes the user's rating for a specific item. */
-    suspend fun deleteRating(itemId: String): ApiResult<Unit> =
-        personalDataApi.deleteRating(itemId)
+    suspend fun deleteRating(itemId: String): ApiResult<Unit> {
+        val handle = userItemStatePort.recordRating(itemId, null)
+        val result = personalDataApi.deleteRating(itemId, handle.scope)
+        userItemStatePort.resolve(handle, result.toWriteOutcome())
+        return result
+    }
 
     // -- Watched --
 
@@ -102,8 +138,16 @@ open class PersonalDataRepository(
      * targets, so passing a series / season ID marks the appropriate
      * episodes.
      */
-    open suspend fun setWatched(itemId: String, watched: Boolean): ApiResult<Unit> =
-        if (watched) personalDataApi.markWatched(itemId) else personalDataApi.markUnwatched(itemId)
+    open suspend fun setWatched(itemId: String, watched: Boolean): ApiResult<Unit> {
+        val handle = userItemStatePort.recordWatched(itemId, watched)
+        val result = if (watched) {
+            personalDataApi.markWatched(itemId, handle.scope)
+        } else {
+            personalDataApi.markUnwatched(itemId, handle.scope)
+        }
+        userItemStatePort.resolve(handle, result.toWriteOutcome())
+        return result
+    }
 
     // -- Continue Watching dismissals --
 

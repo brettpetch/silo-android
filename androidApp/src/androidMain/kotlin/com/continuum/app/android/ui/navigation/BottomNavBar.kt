@@ -2,11 +2,15 @@ package com.continuum.app.android.ui.navigation
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -34,13 +38,15 @@ enum class Tab(
     val icon: ImageVector,
     val selectedIcon: ImageVector,
 ) {
-    Home("home", "Home", Icons.Outlined.Home, Icons.Filled.Home),
-    Libraries("libraries", "Libraries", Icons.Outlined.VideoLibrary, Icons.Filled.VideoLibrary),
-    Recommendations(
-        "recommendations",
-        "Recommendations",
-        Icons.Outlined.AutoAwesome,
-        Icons.Filled.AutoAwesome,
+    Home(Route.Home.route, "Home", Icons.Outlined.Home, Icons.Filled.Home),
+    Libraries(Route.Libraries.route, "Libraries", Icons.Outlined.GridView, Icons.Filled.GridView),
+    ForYou(Route.Recommendations.route, "For You", Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome),
+    Calendar(Route.Calendar.route, "Calendar", Icons.Outlined.CalendarMonth, Icons.Filled.CalendarMonth),
+    Downloads(
+        Route.Downloads.route,
+        "Downloads",
+        Icons.Outlined.Download,
+        Icons.Filled.Download,
     ),
 }
 
@@ -51,6 +57,10 @@ enum class Tab(
 fun ContinuumBottomNavBar(
     currentTab: Tab,
     onTabSelected: (Tab) -> Unit,
+    // Caller decides which tabs to render — used to hide the Downloads tab
+    // when the user has no downloads in flight or on disk. Defaults to all
+    // tabs for backwards-compat.
+    tabs: List<Tab> = Tab.entries.toList(),
 ) {
     // Paint the bar background on the outer Box so it extends behind the
     // gesture-nav inset, then apply the inset as padding around the
@@ -70,7 +80,7 @@ fun ContinuumBottomNavBar(
             windowInsets = WindowInsets(0),
             modifier = Modifier.height(60.dp),
         ) {
-            Tab.entries.forEach { tab ->
+            tabs.forEach { tab ->
                 val selected = tab == currentTab
                 NavigationBarItem(
                     selected = selected,

@@ -142,6 +142,9 @@ class AndroidPlayerSettingsStore(
     override val dvProfile7HDR10FallbackFlow: Flow<Boolean> =
         profileScopedFlow(true) { p, s -> p.boolFor(s, PlaybackSettingsKeys.DvProfile7HDR10Fallback, true) }
 
+    override val downloadsWifiOnlyFlow: Flow<Boolean> =
+        profileScopedFlow(true) { p, s -> p.boolFor(s, PlaybackSettingsKeys.DownloadsWifiOnly, true) }
+
     override val subtitleUsesDeviceOverrideFlow: Flow<Boolean> =
         profileScopedFlow(false) { p, s ->
             p.boolFor(s, PlaybackSettingsKeys.SubtitleUsesDeviceOverride, false)
@@ -165,6 +168,16 @@ class AndroidPlayerSettingsStore(
 
     override val sleepTimerDefaultMinutesFlow: Flow<Int> =
         profileScopedFlow(30) { p, s -> p.intFor(s, PlaybackSettingsKeys.SleepTimerDefaultMinutes, 30) }
+
+    override val resumeRewindSecondsFlow: Flow<Int> =
+        profileScopedFlow(DEFAULT_RESUME_REWIND_SECONDS) { p, s ->
+            p.intFor(s, PlaybackSettingsKeys.ResumeRewindSeconds, DEFAULT_RESUME_REWIND_SECONDS)
+        }
+
+    override val passOutThresholdFlow: Flow<Int> =
+        profileScopedFlow(DEFAULT_PASSOUT_THRESHOLD) { p, s ->
+            p.intFor(s, PlaybackSettingsKeys.PassOutThreshold, DEFAULT_PASSOUT_THRESHOLD)
+        }
 
     // ---- Strings -------------------------------------------------------
     override val preferredQualityFlow: Flow<String> =
@@ -200,6 +213,9 @@ class AndroidPlayerSettingsStore(
     override suspend fun setDvProfile7HDR10Fallback(value: Boolean) =
         writeBool(PlaybackSettingsKeys.DvProfile7HDR10Fallback, value)
 
+    override suspend fun setDownloadsWifiOnly(value: Boolean) =
+        writeBool(PlaybackSettingsKeys.DownloadsWifiOnly, value)
+
     override suspend fun setPlaybackSpeed(value: Double) {
         val clamped = value.coerceIn(0.25, 4.0)
         withScope { scope, store ->
@@ -209,13 +225,19 @@ class AndroidPlayerSettingsStore(
     }
 
     override suspend fun setAudioSyncMs(value: Int) =
-        writeInt(PlaybackSettingsKeys.AudioSyncMs, value.coerceIn(-500, 500))
+        writeInt(PlaybackSettingsKeys.AudioSyncMs, value.coerceIn(-5000, 5000))
 
     override suspend fun setSubtitleSyncMs(value: Int) =
-        writeInt(PlaybackSettingsKeys.SubtitleSyncMs, value.coerceIn(-500, 500))
+        writeInt(PlaybackSettingsKeys.SubtitleSyncMs, value.coerceIn(-10000, 10000))
 
     override suspend fun setNextUpPromptSeconds(value: Int) =
         writeInt(PlaybackSettingsKeys.NextUpPromptSeconds, value.coerceIn(0, 120))
+
+    override suspend fun setResumeRewindSeconds(value: Int) =
+        writeIntLocal(PlaybackSettingsKeys.ResumeRewindSeconds, value.coerceIn(0, 30))
+
+    override suspend fun setPassOutThreshold(value: Int) =
+        writeIntLocal(PlaybackSettingsKeys.PassOutThreshold, value.coerceIn(0, 10))
 
     override suspend fun setSleepTimerDefaultMinutes(value: Int) =
         writeInt(PlaybackSettingsKeys.SleepTimerDefaultMinutes, value.coerceIn(0, 240))
@@ -360,6 +382,18 @@ class AndroidPlayerSettingsStore(
         }
     }
 
+    /**
+     * Persist an Int that the server does not know about: write the scoped
+     * DataStore slot only, with NO server flush. Used for keys absent from
+     * [PlaybackSettingsKeys.DeviceSettings] so an unknown-key flush can't be
+     * rejected or poison a batch.
+     */
+    private suspend fun writeIntLocal(key: String, value: Int) {
+        withScope { scope, store ->
+            store.edit { it[intPreferencesKey(scope.keyPrefix + key)] = value }
+        }
+    }
+
     private suspend fun writeString(key: String, value: String) {
         withScope { scope, store ->
             store.edit { it[stringPreferencesKey(scope.keyPrefix + key)] = value }
@@ -405,6 +439,10 @@ class AndroidPlayerSettingsStore(
     private companion object {
         const val MIGRATION_SENTINEL_LEGACY = "migration_v1"
         const val MISSING_SENTINEL = "__missing__"
+        // F1/F2 local-only defaults (mirror DefaultResumeRewindSeconds=7.0 and
+        // the previous hardcoded AutoPlayGuard threshold of 3).
+        const val DEFAULT_RESUME_REWIND_SECONDS = 7
+        const val DEFAULT_PASSOUT_THRESHOLD = 3
         val VALID_VIDEO_GRAVITY = setOf("fit", "fill", "stretch")
 
         val BOOLEAN_KEYS: Set<String> = setOf(

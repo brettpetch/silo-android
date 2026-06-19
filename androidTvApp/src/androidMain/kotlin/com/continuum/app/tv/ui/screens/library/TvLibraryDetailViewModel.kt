@@ -4,10 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.continuum.app.model.catalog.BrowseItem
 import com.continuum.app.model.section.LibraryCollection
+import com.continuum.app.model.section.LibraryCollectionsResponse
 import com.continuum.app.model.section.ResolvedSection
 import com.continuum.app.network.ApiResult
 import com.continuum.app.repository.CatalogRepository
 import com.continuum.app.repository.SectionRepository
+import com.continuum.app.tv.ui.util.tvCatalogMediaTypeFor
+import com.continuum.app.tv.ui.util.visibleOnTv
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,28 +19,50 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+/**
+ * Library content sections, in tvOS order (`TVLibraryPill`):
+ * Recommended · Collections · Browse. [Browse] is the full A–Z poster grid
+ * (tvOS calls the same surface "Browse"; the on-screen tab label matches).
+ */
 enum class TvLibraryTab(val label: String) {
     Recommended("Recommended"),
-    Library("Library"),
     Collections("Collections"),
+    Browse("Browse"),
 }
+
+/**
+ * One named or anonymous collections section as it should appear on screen,
+ * in the order computed from `sort_order`. Mirrors tvOS
+ * `LibraryCollectionSection` / the phone client's grouped collections. An
+ * empty [name] renders without a group header (the ungrouped / flat bucket).
+ */
+data class TvCollectionSection(
+    val name: String,
+    val collections: List<LibraryCollection>,
+)
 
 enum class TvLibrarySortOption(val label: String, val wireValue: String) {
     Title("Title", "title"),
     DateAdded("Date Added", "added_at"),
-    ReleaseDate("Release Date", "release_date"),
+    // Server expects "year" for release-date sort (matches phone); the old
+    // "release_date" value was unsupported.
+    ReleaseDate("Release Year", "year"),
     Rating("Rating", "rating_imdb");
 
     companion object {
         fun fromWire(value: String): TvLibrarySortOption =
-            entries.firstOrNull { it.wireValue == value } ?: Title
+            entries.firstOrNull { it.wireValue == value } ?: DateAdded
     }
 }
 
 data class TvLibraryBrowseFilter(
     val genre: String? = null,
     val namePrefix: String? = null,
-    val sort: String = TvLibrarySortOption.Title.wireValue,
+    // Default to newest-first (added_at), matching the global browse + the
+    // shared CatalogRepository's default; TV previously diverged with Title.
+    val sort: String = TvLibrarySortOption.DateAdded.wireValue,
+    val yearMin: Int? = null,
+    val yearMax: Int? = null,
 )
 
 class TvLibraryDetailViewModel(
@@ -64,6 +89,7 @@ class TvLibraryDetailViewModel(
         val browseError: String? = null,
         val browseFilter: TvLibraryBrowseFilter = TvLibraryBrowseFilter(),
         val collections: List<LibraryCollection> = emptyList(),
+        val collectionSections: List<TvCollectionSection> = emptyList(),
         val collectionsLoading: Boolean = false,
         val collectionsError: String? = null,
     )
@@ -93,7 +119,7 @@ class TvLibraryDetailViewModel(
         _uiState.update { it.copy(selectedTab = tab) }
         when (tab) {
             TvLibraryTab.Recommended -> if (!loadedRecommended) loadRecommended()
-            TvLibraryTab.Library -> if (!loadedBrowse) loadBrowse(reset = true)
+            TvLibraryTab.Browse -> if (!loadedBrowse) loadBrowse(reset = true)
             TvLibraryTab.Collections -> if (!loadedCollections) loadCollections()
         }
     }
@@ -122,6 +148,18 @@ class TvLibraryDetailViewModel(
         )
     }
 
+    fun onYearRangeChanged(yearMin: Int?, yearMax: Int?) {
+        updateBrowseFilter(
+            _uiState.value.browseFilter.copy(
+                yearMin = yearMin,
+                yearMax = yearMax,
+                // Match the existing pattern in onGenreChanged/onSortChanged:
+                // changing a high-level filter dimension resets the alphabet jump.
+                namePrefix = null,
+            ),
+        )
+    }
+
     fun loadMoreBrowse() {
         val state = _uiState.value
         if (state.browseLoading || state.browseLoadingMore || !state.browseHasMore) return
@@ -143,7 +181,7 @@ class TvLibraryDetailViewModel(
     private fun updateBrowseFilter(filter: TvLibraryBrowseFilter) {
         if (_uiState.value.browseFilter == filter) return
         _uiState.update { it.copy(browseFilter = filter) }
-        if (_uiState.value.selectedTab == TvLibraryTab.Library || loadedBrowse) {
+        if (_uiState.value.selectedTab == TvLibraryTab.Browse || loadedBrowse) {
             loadBrowse(reset = true)
         }
     }
@@ -188,7 +226,7 @@ class TvLibraryDetailViewModel(
 
             _uiState.update {
                 it.copy(
-                    sections = resolved.filter { section -> section.items.isNotEmpty() },
+                    sections = resolved.visibleOnTv(),
                     recommendedLoading = false,
                     recommendedError = null,
                 )
@@ -253,6 +291,8 @@ class TvLibraryDetailViewModel(
                 offset = offset,
                 limit = pageSize,
                 namePrefix = filter.namePrefix,
+                yearMin = filter.yearMin,
+                yearMax = filter.yearMax,
                 snapshotAt = browseSnapshot,
             )
 
@@ -265,8 +305,9 @@ class TvLibraryDetailViewModel(
                         browseSnapshot = response.snapshot
                     }
                     _uiState.update {
+                        val visibleItems = response.items.visibleOnTv()
                         it.copy(
-                            browseItems = if (reset) response.items else it.browseItems + response.items,
+                            browseItems = if (reset) visibleItems else it.browseItems + visibleItems,
                             browseHasMore = response.hasMore,
                             browseLoading = false,
                             browseLoadingMore = false,
@@ -302,13 +343,17 @@ class TvLibraryDetailViewModel(
         loadedCollections = true
         viewModelScope.launch {
             _uiState.update { it.copy(collectionsLoading = true, collectionsError = null) }
-            when (val result = sectionRepository.getLibraryCollections(libraryId)) {
-                is ApiResult.Success -> _uiState.update {
-                    it.copy(
-                        collections = result.data,
-                        collectionsLoading = false,
-                        collectionsError = null,
-                    )
+            when (val result = sectionRepository.getLibraryCollectionsGrouped(libraryId)) {
+                is ApiResult.Success -> {
+                    val sections = buildCollectionSections(result.data)
+                    _uiState.update {
+                        it.copy(
+                            collections = sections.flatMap { section -> section.collections },
+                            collectionSections = sections,
+                            collectionsLoading = false,
+                            collectionsError = null,
+                        )
+                    }
                 }
                 is ApiResult.Error -> {
                     loadedCollections = false
@@ -332,8 +377,43 @@ class TvLibraryDetailViewModel(
         }
     }
 
-    private fun mediaTypeFor(type: String): String = when (type.lowercase()) {
-        "series", "shows", "tv" -> "series"
-        else -> "movie"
+    /**
+     * Builds the ordered render list: each non-empty group becomes a section in
+     * `sort_order` order, and the ungrouped bucket is woven in at its own
+     * `sort_order` slot. When the response is flat (no groups), a single
+     * anonymous section is produced. Mirrors the phone client's `buildSections`.
+     */
+    private fun buildCollectionSections(
+        response: LibraryCollectionsResponse,
+    ): List<TvCollectionSection> {
+        val groups = response.groups
+        val ungrouped = response.ungrouped
+
+        if (groups.isEmpty() && ungrouped == null) {
+            return if (response.collections.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(TvCollectionSection(name = "", collections = response.collections))
+            }
+        }
+
+        data class Slot(val order: Int, val section: TvCollectionSection)
+        val slots = mutableListOf<Slot>()
+        for (group in groups) {
+            if (group.collections.isEmpty()) continue
+            slots += Slot(
+                order = group.sortOrder,
+                section = TvCollectionSection(name = group.name, collections = group.collections),
+            )
+        }
+        if (ungrouped != null && ungrouped.collections.isNotEmpty()) {
+            slots += Slot(
+                order = ungrouped.sortOrder,
+                section = TvCollectionSection(name = "", collections = ungrouped.collections),
+            )
+        }
+        return slots.sortedBy { it.order }.map { it.section }
     }
+
+    private fun mediaTypeFor(type: String): String? = tvCatalogMediaTypeFor(type)
 }

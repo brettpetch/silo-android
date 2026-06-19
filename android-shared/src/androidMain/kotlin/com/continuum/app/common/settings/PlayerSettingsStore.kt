@@ -10,6 +10,10 @@ interface PlayerSettingsStore {
     val autoPlayNextFlow: Flow<Boolean>
     val hdrEnabledFlow: Flow<Boolean>
     val dvProfile7HDR10FallbackFlow: Flow<Boolean>
+    /** Per-profile preference for restricting downloads to unmetered (Wi-Fi)
+     *  networks. Default true. Consumed by [DownloadEnqueuer] at enqueue
+     *  time to set the WorkManager NetworkType constraint. */
+    val downloadsWifiOnlyFlow: Flow<Boolean>
 
     // Doubles
     val playbackSpeedFlow: Flow<Double>
@@ -19,6 +23,10 @@ interface PlayerSettingsStore {
     val subtitleSyncMsFlow: Flow<Int>
     val nextUpPromptSecondsFlow: Flow<Int>
     val sleepTimerDefaultMinutesFlow: Flow<Int>
+    /** Seconds to skip back on resume (F1). Default 7; 0 = off. Local-only. */
+    val resumeRewindSecondsFlow: Flow<Int>
+    /** Consecutive auto-advances before the "Still watching?" prompt (F2). Default 3; 0 = off. Local-only. */
+    val passOutThresholdFlow: Flow<Int>
 
     // Strings
     val preferredQualityFlow: Flow<String>
@@ -43,6 +51,7 @@ interface PlayerSettingsStore {
     suspend fun setAutoPlayNext(value: Boolean)
     suspend fun setHdrEnabled(value: Boolean)
     suspend fun setDvProfile7HDR10Fallback(value: Boolean)
+    suspend fun setDownloadsWifiOnly(value: Boolean)
 
     suspend fun setPlaybackSpeed(value: Double)
 
@@ -50,6 +59,10 @@ interface PlayerSettingsStore {
     suspend fun setSubtitleSyncMs(value: Int)
     suspend fun setNextUpPromptSeconds(value: Int)
     suspend fun setSleepTimerDefaultMinutes(value: Int)
+    /** Set resume skip-back seconds (clamped 0..30; 0 = off). */
+    suspend fun setResumeRewindSeconds(value: Int)
+    /** Set the pass-out prompt threshold (clamped 0..10; 0 = off). */
+    suspend fun setPassOutThreshold(value: Int)
 
     suspend fun setPreferredQuality(value: String)
     suspend fun setAudioLanguage(value: String)

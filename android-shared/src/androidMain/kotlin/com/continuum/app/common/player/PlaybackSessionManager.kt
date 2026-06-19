@@ -52,7 +52,6 @@ open class PlaybackSessionManager(
             is ApiResult.Success -> Log.i(
                 TAG,
                 "startSession -> playMethod=${result.data.playMethod} " +
-                    "streamUrl=${result.data.streamUrl} " +
                     "playbackInfo=${result.data.playbackInfo}",
             )
             is ApiResult.Error -> Log.w(TAG, "startSession error: ${result.code} ${result.message}")
@@ -94,12 +93,17 @@ open class PlaybackSessionManager(
     /**
      * Switches the audio track mid-stream.
      * May trigger a new transcode if the server needs to re-mux.
+     *
+     * [position] is the current playback position in seconds. For TRANSCODE
+     * sessions the server uses it as the re-seek point; omitting it would cause
+     * the transcode to restart from 0.
      */
     suspend fun changeAudio(
         sessionId: String,
         audioTrackIndex: Int,
+        position: Double? = null,
     ): ApiResult<ChangeAudioResponse> =
-        playbackRepository.changeAudio(sessionId, audioTrackIndex)
+        playbackRepository.changeAudio(sessionId, audioTrackIndex, position)
 
     /** Returns the current access token for stream authentication. */
     suspend fun getAccessToken(): String? = tokenManager.getAccessToken()

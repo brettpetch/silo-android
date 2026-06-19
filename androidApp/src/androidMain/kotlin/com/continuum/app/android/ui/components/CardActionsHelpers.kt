@@ -30,39 +30,45 @@ fun rememberBrowseItemCardActions(
     val coordinator: MediaActionsCoordinator = koinInject()
     val scope = rememberCoroutineScope()
 
-    var state by remember(item.contentId) {
+    // Re-key on userState too: when the list re-emits with an overlaid userState
+    // (local watched/favorite applied), the card must pick it up — keying on
+    // contentId alone kept the stale state and hid the overlay. The card's own
+    // optimistic toggles mutate `state` (not item.userState), so they aren't reset.
+    var state by remember(item.contentId, item.userState) {
         mutableStateOf(item.userState ?: MediaItemUserState())
     }
 
-    val actions = MediaCardActions(
-        onSetWatched = { watched ->
-            val previous = state
-            state = state.copy(played = watched)
-            scope.launch {
-                if (coordinator.setWatched(item.contentId, watched).isFailure()) {
-                    state = previous
+    val actions = remember(item.contentId, coordinator, scope) {
+        MediaCardActions(
+            onSetWatched = { watched ->
+                val previous = state
+                state = state.copy(played = watched)
+                scope.launch {
+                    if (coordinator.setWatched(item.contentId, watched).isFailure()) {
+                        state = previous
+                    }
                 }
-            }
-        },
-        onToggleFavorite = { favorite ->
-            val previous = state
-            state = state.copy(isFavorite = favorite)
-            scope.launch {
-                if (coordinator.toggleFavorite(item.contentId, favorite).isFailure()) {
-                    state = previous
+            },
+            onToggleFavorite = { favorite ->
+                val previous = state
+                state = state.copy(isFavorite = favorite)
+                scope.launch {
+                    if (coordinator.toggleFavorite(item.contentId, favorite).isFailure()) {
+                        state = previous
+                    }
                 }
-            }
-        },
-        onToggleWatchlist = { inWatchlist ->
-            val previous = state
-            state = state.copy(inWatchlist = inWatchlist)
-            scope.launch {
-                if (coordinator.toggleWatchlist(item.contentId, inWatchlist).isFailure()) {
-                    state = previous
+            },
+            onToggleWatchlist = { inWatchlist ->
+                val previous = state
+                state = state.copy(inWatchlist = inWatchlist)
+                scope.launch {
+                    if (coordinator.toggleWatchlist(item.contentId, inWatchlist).isFailure()) {
+                        state = previous
+                    }
                 }
-            }
-        },
-    )
+            },
+        )
+    }
 
     return actions to state
 }

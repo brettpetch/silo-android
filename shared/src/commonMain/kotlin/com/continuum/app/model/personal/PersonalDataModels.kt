@@ -149,9 +149,9 @@ data class LibraryPlaybackPreference(
 
 @Serializable
 data class RatingEntry(
-    @SerialName("media_item_id") val mediaItemId: String,
+    @SerialName("media_item_id") val mediaItemId: String? = null,
     val rating: Double,
-    @SerialName("updated_at") val updatedAt: String? = null
+    @SerialName("rated_at") val updatedAt: String? = null
 )
 
 @Serializable
@@ -167,7 +167,7 @@ data class CollectionsResponse(
 
 @Serializable
 data class SetRatingRequest(
-    val rating: Double
+    val rating: Int
 )
 
 @Serializable

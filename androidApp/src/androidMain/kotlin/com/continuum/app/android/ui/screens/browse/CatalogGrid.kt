@@ -20,14 +20,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.continuum.app.android.ui.components.MediaCard
+import com.continuum.app.android.ui.components.MediaGridDefaults
 import com.continuum.app.android.ui.components.rememberBrowseItemCardActions
 import com.continuum.app.model.catalog.BrowseItem
+import com.continuum.app.overlays.OverlayDataExtractor
 
 /**
  * A vertical grid of media cards with infinite-scroll support.
  *
- * Uses a 3-column grid layout with automatic load-more triggering when
- * the user scrolls near the bottom.
+     * Uses the shared iOS-style adaptive poster grid with automatic load-more
+     * triggering when the user scrolls near the bottom.
  *
  * @param items The catalog items to display.
  * @param isLoadingMore Whether additional items are currently loading.
@@ -63,16 +65,19 @@ fun CatalogGrid(
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        // iOS phone: adaptive poster grid, 110pt minimum card width, 12pt
+        // column spacing, 16pt row spacing, 16pt horizontal page padding.
+        columns = GridCells.Adaptive(MediaGridDefaults.PosterGridMinWidth),
         state = gridState,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(MediaGridDefaults.PosterGridHorizontalSpacing),
+        verticalArrangement = Arrangement.spacedBy(MediaGridDefaults.PosterGridVerticalSpacing),
         modifier = modifier,
     ) {
         items(
             items = items,
             key = { it.contentId },
+            contentType = { item -> item.type },
         ) { item ->
             val (actions, userState) = rememberBrowseItemCardActions(item)
             MediaCard(
@@ -83,14 +88,15 @@ fun CatalogGrid(
                 type = item.type,
                 userState = userState,
                 onClick = { onItemClick(item.contentId) },
-                width = 120.dp, // Will be constrained by grid cell
+                width = MediaGridDefaults.PosterGridMinWidth,
+                overlay = OverlayDataExtractor.fromBrowseItem(item),
                 actions = actions,
             )
         }
 
         // Loading indicator at bottom
         if (isLoadingMore) {
-            item(span = { GridItemSpan(3) }) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

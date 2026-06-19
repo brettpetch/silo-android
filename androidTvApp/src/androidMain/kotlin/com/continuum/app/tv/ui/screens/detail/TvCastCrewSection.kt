@@ -35,10 +35,12 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -53,8 +55,10 @@ import com.continuum.app.tv.ui.theme.continuumCardDefaults
 /**
  * Horizontal rail of circular cast portraits, matching the tvOS
  * `TVDetailCastRail`. Cards lift on focus; the whole rail is a `focusGroup`
- * so seasons-rail / hero focus arithmetic stays clean. Tapping a card is a
- * no-op (person detail isn't wired on Android TV yet, same as tvOS today).
+ * so seasons-rail / hero focus arithmetic stays clean. Cards lift on focus
+ * and invoke [onCastMemberClick] when selected. The caller decides whether a
+ * member has a routable `person_id`; members without one can still render as
+ * display-only credits.
  */
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalTvMaterial3Api::class)
 @Composable
@@ -64,13 +68,15 @@ fun TvCastCrewSection(
     firstItemFocusRequester: FocusRequester? = null,
     firstItemCardModifier: Modifier = Modifier,
     onDirectionDown: (() -> Boolean)? = null,
+    onDirectionUp: (() -> Boolean)? = null,
+    onCastMemberClick: (CastMember) -> Unit = {},
 ) {
     if (cast.isEmpty()) return
-    val photoSize = 200.dp
+    val photoSize = 100.dp
 
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         TvDetailSectionHeader(eyebrow = "Cast", title = "& Crew")
 
@@ -83,12 +89,16 @@ fun TvCastCrewSection(
                     }
                 }
                 .then(
-                    if (onDirectionDown != null) {
+                    if (onDirectionDown != null || onDirectionUp != null) {
                         Modifier.onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-                                onDirectionDown()
-                            } else {
+                            if (event.type != KeyEventType.KeyDown) {
                                 false
+                            } else {
+                                when (event.key) {
+                                    Key.DirectionDown -> onDirectionDown?.invoke() ?: false
+                                    Key.DirectionUp -> onDirectionUp?.invoke() ?: false
+                                    else -> false
+                                }
                             }
                         }
                     } else {
@@ -96,18 +106,20 @@ fun TvCastCrewSection(
                     },
                 )
                 .focusGroup(),
-            horizontalArrangement = Arrangement.spacedBy(44.dp),
-            contentPadding = PaddingValues(vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(22.dp),
+            contentPadding = PaddingValues(vertical = 12.dp),
         ) {
             itemsIndexed(
                 cast.take(24),
                 key = { idx, member -> "${member.personId ?: member.name}-${member.order}-$idx" },
+                contentType = { _, _ -> "cast-member" },
             ) { index, member ->
                 TvCastCard(
                     member = member,
                     photoSize = photoSize,
                     focusRequester = firstItemFocusRequester.takeIf { index == 0 },
                     cardModifier = if (index == 0) firstItemCardModifier else Modifier,
+                    onClick = { onCastMemberClick(member) },
                 )
             }
         }
@@ -121,9 +133,10 @@ private fun TvCastCard(
     photoSize: Dp,
     focusRequester: FocusRequester?,
     cardModifier: Modifier,
+    onClick: () -> Unit = {},
 ) {
     val shape = CircleShape
-    val cardFocus = continuumCardDefaults(shape = shape, focusedScale = 1.06f)
+    val cardFocus = continuumCardDefaults(shape = shape, focusedScale = 1.05f)
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
@@ -132,7 +145,7 @@ private fun TvCastCard(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Card(
-            onClick = {},
+            onClick = onClick,
             interactionSource = interactionSource,
             shape = CardDefaults.shape(shape = shape),
             scale = cardFocus.scale,
@@ -166,21 +179,31 @@ private fun TvCastCard(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = member.name,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 11.sp,
+                lineHeight = 12.sp,
+            ),
             color = if (isFocused) Color.White else Color.White.copy(alpha = 0.88f),
+            // Reserve two lines so single- and two-line names bottom-align,
+            // mirroring tvOS `lineLimit(2, reservesSpace: true)`.
+            minLines = 2,
             maxLines = 2,
             textAlign = TextAlign.Center,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
         )
         if (!member.character.isNullOrBlank()) {
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = member.character!!,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 9.sp,
+                    lineHeight = 10.sp,
+                ),
                 color = Color.White.copy(alpha = 0.55f),
                 maxLines = 1,
                 textAlign = TextAlign.Center,

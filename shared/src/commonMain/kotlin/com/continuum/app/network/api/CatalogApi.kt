@@ -38,7 +38,7 @@ class CatalogApi(private val client: HttpClient) {
             namePrefix?.let { parameter("name_prefix", it) }
             yearMin?.let { parameter("year_min", it) }
             yearMax?.let { parameter("year_max", it) }
-            snapshotAt?.let { parameter("snapshot_at", it) }
+            snapshotAt?.let { parameter("snapshot", it) }
         }
     }
 
@@ -81,7 +81,7 @@ class CatalogApi(private val client: HttpClient) {
         }
     }
 
-    suspend fun getPerson(id: Int): ApiResult<Person> = safeApiCall {
+    suspend fun getPerson(id: Long): ApiResult<Person> = safeApiCall {
         client.get("/api/v1/people/$id")
     }
 
@@ -90,10 +90,11 @@ class CatalogApi(private val client: HttpClient) {
      * Mirrors the iOS `personCatalogItems` helper.
      */
     suspend fun getPersonItems(
-        personId: Int,
+        personId: Long,
         mediaType: String? = null,
         offset: Int? = null,
         limit: Int? = null,
+        snapshotAt: String? = null,
     ): ApiResult<CatalogResponse> = safeApiCall {
         client.get("/api/v1/catalog") {
             parameter("source", "person")
@@ -103,6 +104,7 @@ class CatalogApi(private val client: HttpClient) {
             mediaType?.let { parameter("type", it) }
             offset?.let { parameter("offset", it) }
             limit?.let { parameter("limit", it) }
+            snapshotAt?.let { parameter("snapshot", it) }
         }
     }
 }

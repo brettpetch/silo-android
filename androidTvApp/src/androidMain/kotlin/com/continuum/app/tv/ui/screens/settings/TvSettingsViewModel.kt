@@ -3,23 +3,27 @@ package com.continuum.app.tv.ui.screens.settings
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.continuum.app.common.settings.AndroidServerSettingsCache
 import com.continuum.app.common.settings.LibraryPlaybackPrefsStore
+import com.continuum.app.common.settings.OverlayPrefsStore
 import com.continuum.app.common.settings.PlayerSettingsStore
+import com.continuum.app.model.admin.shouldShowClientAdminSurface
 import com.continuum.app.model.auth.User
+import com.continuum.app.model.auth.isActingAdmin
+import com.continuum.app.model.notifications.NotificationPreferencesUpdate
 import com.continuum.app.model.profile.UpdateProfileRequest
-import com.continuum.app.model.settings.PlaybackSettingsKeys
 import com.continuum.app.model.settings.SubtitleAppearance
+import com.continuum.app.model.settings.SubtitleBackgroundStylePreset
 import com.continuum.app.model.settings.SubtitleFontSizePreset
+import com.continuum.app.model.settings.SubtitlePositionPreset
 import com.continuum.app.network.ApiResult
 import com.continuum.app.network.TokenManager
 import com.continuum.app.repository.AuthRepository
+import com.continuum.app.repository.NotificationsRepository
 import com.continuum.app.repository.ProfileRepository
-import com.continuum.app.repository.SettingsRepository
+import com.continuum.app.tv.data.preferences.LegacyTvPrefsMigration
 import com.continuum.app.tv.data.preferences.PlaybackQuality
 import com.continuum.app.tv.data.preferences.SubtitleMode
 import com.continuum.app.tv.data.preferences.SubtitleSize
-import com.continuum.app.tv.data.preferences.TvPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,8 +36,8 @@ import kotlinx.coroutines.launch
  * ViewModel for the TV settings screen. Server-managed device settings
  * flow exclusively through [PlayerSettingsStore] (mirror of iOS
  * `PlayerSettings.shared`); profile-level subtitle prefs still go via
- * [profileRepository]. [TvPreferences] is retained only as the source of
- * the one-time legacy → server migration that runs on first boot.
+ * [profileRepository]. [LegacyTvPrefsMigration] runs the one-time legacy
+ * `tv_prefs` → server import on first boot (sentinel-gated no-op after).
  *
  * Sign-out and switch-profile operations emit a one-shot [NavAction]
  * signal that the screen collects and forwards to the top-level NavHost.
@@ -42,11 +46,11 @@ class TvSettingsViewModel(
     private val authRepository: AuthRepository,
     private val profileRepository: ProfileRepository,
     private val tokenManager: TokenManager,
-    private val preferences: TvPreferences,
-    private val settingsRepository: SettingsRepository,
-    private val settingsCache: AndroidServerSettingsCache,
     private val playerSettingsStore: PlayerSettingsStore,
     private val libraryPlaybackPrefsStore: LibraryPlaybackPrefsStore,
+    private val overlayPrefsStore: OverlayPrefsStore,
+    private val legacyTvPrefsMigration: LegacyTvPrefsMigration,
+    private val notificationsRepository: NotificationsRepository,
 ) : ViewModel() {
 
     enum class NavAction { SIGNED_OUT, SWITCH_PROFILE }
@@ -55,14 +59,42 @@ class TvSettingsViewModel(
         val user: User? = null,
         val userLoading: Boolean = true,
         val userError: String? = null,
+        // Active profile identity for the tappable account header row.
+        val profileName: String? = null,
+        val profileAvatar: String? = null,
         val serverUrl: String = "",
+        val serverName: String = "",
         val playbackQuality: PlaybackQuality = PlaybackQuality.Auto,
         val subtitleMode: SubtitleMode = SubtitleMode.Auto,
         val subtitleLanguage: String = "",
+        val audioLanguage: String = "",
         val subtitleSize: SubtitleSize = SubtitleSize.Medium,
+        val showForcedSubtitles: Boolean = true,
+        // Full subtitle appearance + whether the device-scoped override is on.
+        // Mirrors iOS `subtitleAppearance` / `subtitleUsesDeviceAppearanceOverride`.
+        val subtitleAppearance: SubtitleAppearance = SubtitleAppearance.DEFAULT,
+        val subtitleUsesDeviceOverride: Boolean = false,
         val autoPlayNext: Boolean = true,
         val autoSkipIntro: Boolean = false,
         val autoSkipCredits: Boolean = false,
+        // Seconds to skip back on resume (0 = off); consecutive auto-advances
+        // before the "Still watching?" prompt (0 = off).
+        val resumeRewindSeconds: Int = 7,
+        val passOutThreshold: Int = 3,
+        // Seconds before the end of an episode to surface the Up-Next prompt
+        // (0 = at the very end). Mirrors tvOS `nextUpPromptSeconds`.
+        val nextUpPromptSeconds: Int = 10,
+        // Notifications (in-app). The section is hidden entirely unless the
+        // server reports in-app notifications are enabled AND preferences
+        // load — so no toggles (least of all push) ever render otherwise.
+        // Client admin is hidden for now even when the server would accept acting-admin.
+        val adminVisible: Boolean = false,
+        val notificationsVisible: Boolean = false,
+        val notificationsEnabled: Boolean = true,
+        val notifyFavorites: Boolean = true,
+        val notifyWatchlist: Boolean = true,
+        val notifyContinueWatching: Boolean = true,
+        val notifyNextUp: Boolean = true,
         val navAction: NavAction? = null,
     )
 
@@ -73,14 +105,25 @@ class TvSettingsViewModel(
         loadUser()
         loadSettings()
         observePlayerSettings()
+        loadNotificationPreferences()
     }
 
     fun loadUser() {
         viewModelScope.launch {
             _uiState.update { it.copy(userLoading = true, userError = null) }
             when (val r = authRepository.getCurrentUser()) {
-                is ApiResult.Success -> _uiState.update {
-                    it.copy(user = r.data, userLoading = false, userError = null)
+                is ApiResult.Success -> {
+                    val profile = profileRepository.getActiveProfile()
+                    _uiState.update {
+                        it.copy(
+                            user = r.data,
+                            userLoading = false,
+                            userError = null,
+                            profileName = profile?.name,
+                            profileAvatar = profile?.avatar,
+                            adminVisible = shouldShowClientAdminSurface(isActingAdmin(r.data, profile)),
+                        )
+                    }
                 }
                 is ApiResult.Error -> _uiState.update {
                     it.copy(
@@ -101,11 +144,11 @@ class TvSettingsViewModel(
     private fun loadSettings() {
         viewModelScope.launch {
             val serverUrl = tokenManager.getServerUrl()
-            _uiState.update { it.copy(serverUrl = serverUrl) }
+            _uiState.update { it.copy(serverUrl = serverUrl, serverName = serverDisplayName(serverUrl)) }
 
             // One-shot import of pre-server-sync TvPreferences values.
-            // Idempotent — gated by the legacy cache's migration sentinel.
-            migrateLegacyTvPreferencesIfNeeded(serverUrl)
+            // Idempotent — sentinel-gated inside the migration.
+            legacyTvPrefsMigration.migrateIfNeeded()
 
             // Pull effective device settings (cascade user → device → default).
             // The store writes them to its DataStore; observePlayerSettings()
@@ -119,6 +162,7 @@ class TvSettingsViewModel(
                         it.copy(
                             subtitleMode = SubtitleMode.fromWire(profile.subtitleMode),
                             subtitleLanguage = profile.subtitleLanguage.orEmpty(),
+                            showForcedSubtitles = profile.showForcedSubtitles ?: true,
                         )
                     }
                 }
@@ -140,6 +184,9 @@ class TvSettingsViewModel(
                 playerSettingsStore.autoSkipIntroFlow,
                 playerSettingsStore.autoSkipCreditsFlow,
                 playerSettingsStore.subtitleAppearanceFlow,
+                playerSettingsStore.audioLanguageFlow,
+                playerSettingsStore.resumeRewindSecondsFlow,
+                playerSettingsStore.passOutThresholdFlow,
             ) { values ->
                 @Suppress("UNCHECKED_CAST")
                 val quality = values[0] as String
@@ -151,7 +198,11 @@ class TvSettingsViewModel(
                 val skipCredits = values[3] as Boolean
                 @Suppress("UNCHECKED_CAST")
                 val appearance = values[4] as SubtitleAppearance
-                Snapshot(quality, autoPlay, skipIntro, skipCredits, appearance)
+                @Suppress("UNCHECKED_CAST")
+                val audioLang = values[5] as String
+                val rewind = values[6] as Int
+                val threshold = values[7] as Int
+                Snapshot(quality, autoPlay, skipIntro, skipCredits, appearance, audioLang, rewind, threshold)
             }.collect { snap ->
                 _uiState.update {
                     it.copy(
@@ -160,7 +211,141 @@ class TvSettingsViewModel(
                         autoSkipIntro = snap.skipIntro,
                         autoSkipCredits = snap.skipCredits,
                         subtitleSize = snap.appearance.fontSize.toTvSubtitleSize(),
+                        subtitleAppearance = snap.appearance,
+                        audioLanguage = snap.audioLanguage,
+                        resumeRewindSeconds = snap.resumeRewindSeconds,
+                        passOutThreshold = snap.passOutThreshold,
                     )
+                }
+            }
+        }
+        // Up-Next prompt timing lives outside the 8-arg combine above.
+        viewModelScope.launch {
+            playerSettingsStore.nextUpPromptSecondsFlow.collect { seconds ->
+                _uiState.update { it.copy(nextUpPromptSeconds = seconds) }
+            }
+        }
+        // Device-scoped subtitle-appearance override toggle (same source the
+        // player HUD reads); also kept out of the 8-arg combine.
+        viewModelScope.launch {
+            playerSettingsStore.subtitleUsesDeviceOverrideFlow.collect { enabled ->
+                _uiState.update { it.copy(subtitleUsesDeviceOverride = enabled) }
+            }
+        }
+    }
+
+    /**
+     * Friendly server name for the About group — the host of the configured
+     * URL (mirrors tvOS `serverDisplayName`, which collapses to the host when
+     * no nicer name is known). Falls back to the raw value if it can't be
+     * parsed.
+     */
+    private fun serverDisplayName(url: String): String {
+        if (url.isBlank()) return ""
+        return url
+            .substringAfter("://", url)
+            .substringBefore('/')
+            .ifBlank { url }
+    }
+
+    /**
+     * Folds capability + preferences into UI state. The section is gated on
+     * the server reporting in-app notifications enabled (`in_app.enabled`, the
+     * server feature flag / "available" semantic — there is NO separate
+     * `available` field) AND preferences having loaded. A failed capability or
+     * preferences fetch leaves them null, so the section stays hidden and no
+     * push toggles are ever rendered. The user's on/off is the separate
+     * [NotificationPreferences.enabled] master toggle.
+     */
+    private fun loadNotificationPreferences() {
+        viewModelScope.launch {
+            combine(
+                notificationsRepository.capability,
+                notificationsRepository.preferences,
+            ) { capability, preferences ->
+                capability to preferences
+            }.collect { (capability, preferences) ->
+                val available = capability?.inApp?.enabled == true
+                _uiState.update { state ->
+                    if (!available || preferences == null) {
+                        state.copy(notificationsVisible = false)
+                    } else {
+                        state.copy(
+                            notificationsVisible = true,
+                            notificationsEnabled = preferences.enabled,
+                            notifyFavorites = preferences.notifyFavorites,
+                            notifyWatchlist = preferences.notifyWatchlist,
+                            notifyContinueWatching = preferences.notifyContinueWatching,
+                            notifyNextUp = preferences.notifyNextUp,
+                        )
+                    }
+                }
+            }
+        }
+
+        viewModelScope.launch { notificationsRepository.loadCapability() }
+        viewModelScope.launch { notificationsRepository.loadPreferences() }
+    }
+
+    fun onNotificationsEnabledChanged(value: Boolean) {
+        val previousValue = _uiState.value.notificationsEnabled
+        _uiState.update { it.copy(notificationsEnabled = value) }
+        updateNotificationPreferences(
+            NotificationPreferencesUpdate(enabled = value),
+        ) { it.copy(notificationsEnabled = previousValue) }
+    }
+
+    fun onNotifyFavoritesChanged(value: Boolean) {
+        val previousValue = _uiState.value.notifyFavorites
+        _uiState.update { it.copy(notifyFavorites = value) }
+        updateNotificationPreferences(
+            NotificationPreferencesUpdate(notifyFavorites = value),
+        ) { it.copy(notifyFavorites = previousValue) }
+    }
+
+    fun onNotifyWatchlistChanged(value: Boolean) {
+        val previousValue = _uiState.value.notifyWatchlist
+        _uiState.update { it.copy(notifyWatchlist = value) }
+        updateNotificationPreferences(
+            NotificationPreferencesUpdate(notifyWatchlist = value),
+        ) { it.copy(notifyWatchlist = previousValue) }
+    }
+
+    fun onNotifyContinueWatchingChanged(value: Boolean) {
+        val previousValue = _uiState.value.notifyContinueWatching
+        _uiState.update { it.copy(notifyContinueWatching = value) }
+        updateNotificationPreferences(
+            NotificationPreferencesUpdate(notifyContinueWatching = value),
+        ) { it.copy(notifyContinueWatching = previousValue) }
+    }
+
+    fun onNotifyNextUpChanged(value: Boolean) {
+        val previousValue = _uiState.value.notifyNextUp
+        _uiState.update { it.copy(notifyNextUp = value) }
+        updateNotificationPreferences(
+            NotificationPreferencesUpdate(notifyNextUp = value),
+        ) { it.copy(notifyNextUp = previousValue) }
+    }
+
+    /**
+     * Sends a partial PUT (one named field) for the optimistically-applied
+     * toggle. On failure, [revertField] restores ONLY the single field this
+     * call changed to its prior value — never a wholesale snapshot. Reverting
+     * just the changed field is race-free across distinct fields: two quick
+     * successive toggles of different fields no longer clobber each other (the
+     * first call's failure can't roll back the field the second call set). On
+     * success the repository's preferences flow re-folds the server truth back
+     * into state via [loadNotificationPreferences].
+     */
+    private fun updateNotificationPreferences(
+        update: NotificationPreferencesUpdate,
+        revertField: (UiState) -> UiState,
+    ) {
+        viewModelScope.launch {
+            when (notificationsRepository.updatePreferences(update)) {
+                is ApiResult.Success -> Unit
+                is ApiResult.Error, is ApiResult.NetworkError -> {
+                    _uiState.update(revertField)
                 }
             }
         }
@@ -182,12 +367,75 @@ class TvSettingsViewModel(
         persistProfileSubtitleSettings(previousState)
     }
 
+    /**
+     * Default audio language — a LOCAL player setting (not a profile field),
+     * matching the phone. Writing the store emits on audioLanguageFlow which
+     * the combine above folds back into [UiState.audioLanguage].
+     */
+    fun onAudioLanguageChanged(value: String) {
+        viewModelScope.launch { playerSettingsStore.setAudioLanguage(value) }
+    }
+
+    fun onShowForcedSubtitlesChanged(enabled: Boolean) {
+        val previousState = _uiState.value
+        _uiState.update { it.copy(showForcedSubtitles = enabled) }
+        persistProfileSubtitleSettings(previousState)
+    }
+
     fun onSubtitleSizeChanged(value: SubtitleSize) {
         viewModelScope.launch {
             val current = playerSettingsStore.subtitleAppearanceFlow.first()
             val updated = current.copy(fontSize = value.toFontSizePreset())
             playerSettingsStore.setSubtitleAppearance(updated)
         }
+    }
+
+    /**
+     * Commit a full subtitle-appearance value (device-scoped). The Appearance
+     * picker rows build [next] by copying the current appearance and changing
+     * one field, mirroring the tvOS bindings. The store debounces the server
+     * write and re-emits on [subtitleAppearanceFlow], which the combine folds
+     * back into [UiState.subtitleAppearance].
+     */
+    fun setSubtitleAppearance(next: SubtitleAppearance) {
+        viewModelScope.launch { playerSettingsStore.setSubtitleAppearance(next) }
+    }
+
+    /**
+     * Per-field appearance setters. Each reads the freshest appearance from the
+     * store before copying the single changed field, so a concurrent edit (e.g.
+     * a HUD change while a Settings picker is open) is not clobbered by a stale
+     * composable-captured snapshot. Mirrors [onSubtitleSizeChanged].
+     */
+    private fun editAppearance(transform: (SubtitleAppearance) -> SubtitleAppearance) {
+        viewModelScope.launch {
+            val current = playerSettingsStore.subtitleAppearanceFlow.first()
+            playerSettingsStore.setSubtitleAppearance(transform(current))
+        }
+    }
+
+    fun setSubtitleFontSize(value: SubtitleFontSizePreset) = editAppearance { it.copy(fontSize = value) }
+
+    fun setSubtitleFontFamily(value: String) = editAppearance { it.copy(fontFamily = value) }
+
+    fun setSubtitleFontColor(value: String) = editAppearance { it.copy(fontColor = value) }
+
+    fun setSubtitleTextOutline(value: Boolean) = editAppearance { it.copy(textOutline = value) }
+
+    fun setSubtitleTextOutlineColor(value: String) = editAppearance { it.copy(textOutlineColor = value) }
+
+    fun setSubtitleBackgroundStyle(value: SubtitleBackgroundStylePreset) =
+        editAppearance { it.copy(backgroundStyle = value) }
+
+    fun setSubtitleBackgroundOpacity(value: Int) = editAppearance { it.copy(backgroundOpacity = value) }
+
+    fun setSubtitleBackgroundColor(value: String) = editAppearance { it.copy(backgroundColor = value) }
+
+    fun setSubtitlePosition(value: SubtitlePositionPreset) = editAppearance { it.copy(position = value) }
+
+    /** Toggle the device-level subtitle-appearance override (Custom Appearance). */
+    fun setSubtitleDeviceOverrideEnabled(enabled: Boolean) {
+        viewModelScope.launch { playerSettingsStore.setSubtitleDeviceOverrideEnabled(enabled) }
     }
 
     fun onAutoPlayNextChanged(value: Boolean) {
@@ -200,6 +448,18 @@ class TvSettingsViewModel(
 
     fun onAutoSkipCreditsChanged(value: Boolean) {
         viewModelScope.launch { playerSettingsStore.setAutoSkipCredits(value) }
+    }
+
+    fun onResumeRewindSecondsChanged(value: Int) {
+        viewModelScope.launch { playerSettingsStore.setResumeRewindSeconds(value) }
+    }
+
+    fun onPassOutThresholdChanged(value: Int) {
+        viewModelScope.launch { playerSettingsStore.setPassOutThreshold(value) }
+    }
+
+    fun onNextUpPromptSecondsChanged(value: Int) {
+        viewModelScope.launch { playerSettingsStore.setNextUpPromptSeconds(value) }
     }
 
     /**
@@ -225,6 +485,7 @@ class TvSettingsViewModel(
             // them flash before the fresh fetch lands. iOS parity:
             // `PlaybackPrefsStore.clear()` in the sign-out path.
             libraryPlaybackPrefsStore.clear()
+            overlayPrefsStore.clear()
             context.getSharedPreferences("continuum_auth", Context.MODE_PRIVATE)
                 .edit()
                 .clear()
@@ -240,6 +501,7 @@ class TvSettingsViewModel(
             // Library prefs are per-profile — drop the cache so the next
             // profile's prefs don't ghost-render the previous user's rows.
             libraryPlaybackPrefsStore.clear()
+            overlayPrefsStore.clear()
             context.getSharedPreferences("continuum_auth", Context.MODE_PRIVATE)
                 .edit()
                 .remove("profileId")
@@ -260,6 +522,7 @@ class TvSettingsViewModel(
                     UpdateProfileRequest(
                         subtitleLanguage = state.subtitleLanguage.ifBlank { null },
                         subtitleMode = state.subtitleMode.wireValue,
+                        showForcedSubtitles = state.showForcedSubtitles,
                     )
                 )
             ) {
@@ -268,11 +531,13 @@ class TvSettingsViewModel(
                     _uiState.update { current ->
                         if (
                             current.subtitleLanguage == state.subtitleLanguage &&
-                            current.subtitleMode == state.subtitleMode
+                            current.subtitleMode == state.subtitleMode &&
+                            current.showForcedSubtitles == state.showForcedSubtitles
                         ) {
                             current.copy(
                                 subtitleLanguage = previousState.subtitleLanguage,
                                 subtitleMode = previousState.subtitleMode,
+                                showForcedSubtitles = previousState.showForcedSubtitles,
                             )
                         } else {
                             current
@@ -281,63 +546,6 @@ class TvSettingsViewModel(
                 }
             }
         }
-    }
-
-    /**
-     * One-shot import of legacy [TvPreferences] values. Pushes each
-     * value as a device-scoped override only when the server reports no
-     * existing override for the same key. Gated by the legacy cache's
-     * migration sentinel so it runs at most once per (server, profile,
-     * device) combination.
-     */
-    private suspend fun migrateLegacyTvPreferencesIfNeeded(serverUrl: String) {
-        if (serverUrl.isBlank() || settingsCache.isMigrationComplete(serverUrl, MIGRATION_SCOPE)) {
-            return
-        }
-
-        val legacyQuality = preferences.playbackQuality.first().wireValue
-        val legacySubtitleSize = preferences.subtitleSize.first()
-        val legacyAutoPlayNext = preferences.autoPlayNextEpisode.first()
-        val legacyAutoSkipIntro = preferences.autoSkipIntro.first()
-        val legacyAutoSkipCredits = preferences.autoSkipCredits.first()
-
-        val effective = when (
-            val result = settingsRepository.getEffectiveSettings(
-                listOf(
-                    PlaybackSettingsKeys.PreferredQuality,
-                    PlaybackSettingsKeys.AutoPlayNext,
-                    PlaybackSettingsKeys.AutoSkipIntro,
-                    PlaybackSettingsKeys.AutoSkipCredits,
-                    PlaybackSettingsKeys.SubtitleAppearance,
-                )
-            )
-        ) {
-            is ApiResult.Success -> result.data
-            is ApiResult.Error, is ApiResult.NetworkError -> emptyMap()
-        }
-
-        if (effective[PlaybackSettingsKeys.PreferredQuality]?.hasDeviceOverride != true) {
-            playerSettingsStore.setPreferredQuality(legacyQuality)
-        }
-        if (effective[PlaybackSettingsKeys.AutoPlayNext]?.hasDeviceOverride != true) {
-            playerSettingsStore.setAutoPlayNext(legacyAutoPlayNext)
-        }
-        if (effective[PlaybackSettingsKeys.AutoSkipIntro]?.hasDeviceOverride != true) {
-            playerSettingsStore.setAutoSkipIntro(legacyAutoSkipIntro)
-        }
-        if (effective[PlaybackSettingsKeys.AutoSkipCredits]?.hasDeviceOverride != true) {
-            playerSettingsStore.setAutoSkipCredits(legacyAutoSkipCredits)
-        }
-        if (effective[PlaybackSettingsKeys.SubtitleAppearance]?.hasDeviceOverride != true) {
-            playerSettingsStore.setSubtitleAppearance(
-                SubtitleAppearance.DEFAULT.copy(fontSize = legacySubtitleSize.toFontSizePreset())
-            )
-        }
-
-        // Make sure the writes hit the server even if the user backs out
-        // before the debounce fires.
-        playerSettingsStore.flushPendingDeviceSettings()
-        settingsCache.markMigrationComplete(serverUrl, MIGRATION_SCOPE)
     }
 
     private fun SubtitleSize.toFontSizePreset(): SubtitleFontSizePreset = when (this) {
@@ -362,9 +570,8 @@ class TvSettingsViewModel(
         val skipIntro: Boolean,
         val skipCredits: Boolean,
         val appearance: SubtitleAppearance,
+        val audioLanguage: String,
+        val resumeRewindSeconds: Int,
+        val passOutThreshold: Int,
     )
-
-    private companion object {
-        const val MIGRATION_SCOPE = "android-tv-settings"
-    }
 }

@@ -1,5 +1,8 @@
 package com.continuum.app.android.ui.navigation
 
+import android.net.Uri
+import com.continuum.app.common.player.video.VideoPlayerRouteArgs
+
 /**
  * All navigation routes for the Continuum app.
  *
@@ -16,15 +19,72 @@ sealed class Route(val route: String) {
     data object Setup : Route("setup")
     data object Signup : Route("signup")
 
+    data class PairDevice(
+        val token: String? = null,
+        val code: String? = null,
+    ) : Route(
+        buildString {
+            append("pair_device")
+            val params = listOfNotNull(
+                token?.takeIf { it.isNotBlank() }?.let { "token=${Uri.encode(it)}" },
+                code?.takeIf { it.isNotBlank() }?.let { "code=${Uri.encode(it)}" },
+            )
+            if (params.isNotEmpty()) {
+                append("?")
+                append(params.joinToString("&"))
+            }
+        },
+    ) {
+        companion object {
+            const val ROUTE = "pair_device?token={token}&code={code}"
+        }
+    }
+
     // --- Profile selection (no bottom nav) ---
     data object ProfileSelection : Route("profiles")
+    data object CreateProfile : Route("profiles/create")
+    data class EditProfile(val profileId: String) : Route("profiles/${Uri.encode(profileId)}/edit") {
+        companion object {
+            const val ROUTE = "profiles/{profileId}/edit"
+        }
+    }
 
     // --- Main tabs (inside bottom nav scaffold) ---
+    data object Video : Route("video")
+    data object Audio : Route("audio")
+    data object Reading : Route("reading")
+    data object Downloads : Route("downloads")
+    data class Search(
+        val mediaType: String? = null,
+    ) : Route(
+        mediaType
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "search?mediaType=${Uri.encode(it)}" }
+            ?: "search",
+    ) {
+        companion object {
+            const val ROUTE = "search?mediaType={mediaType}"
+        }
+    }
+    data object Settings : Route("settings")
+    data object CardOverlays : Route("settings/card_overlays")
+
+    // Legacy tab routes retained so old saved back stacks do not crash.
     data object Home : Route("home")
     data object Libraries : Route("libraries")
     data object Recommendations : Route("recommendations")
-    data object Search : Route("search")
-    data object Settings : Route("settings")
+
+    // --- Requests ---
+    data object Requests : Route("requests")
+    data object MyRequests : Route("requests/mine")
+    data class RequestDetail(
+        val mediaType: String,
+        val tmdbId: Int,
+    ) : Route("requests/detail/${Uri.encode(mediaType)}/$tmdbId") {
+        companion object {
+            const val ROUTE = "requests/detail/{mediaType}/{tmdbId}"
+        }
+    }
 
     // --- Detail screens (back navigation, no bottom nav) ---
     data class ItemDetail(
@@ -38,7 +98,7 @@ sealed class Route(val route: String) {
         }
     }
 
-    data class PersonDetail(val personId: Int) : Route("person/$personId") {
+    data class PersonDetail(val personId: Long) : Route("person/$personId") {
         companion object {
             const val ROUTE = "person/{personId}"
         }
@@ -70,6 +130,8 @@ sealed class Route(val route: String) {
         val fileId: Int? = null,
         val audioTrackIndex: Int? = null,
         val subtitleTrackIndex: Int? = null,
+        val resumePositionSeconds: Double? = null,
+        val roomId: String? = null,
     ) : Route(
         buildString {
             append("player/$contentId")
@@ -77,6 +139,9 @@ sealed class Route(val route: String) {
                 fileId?.let { "fileId=$it" },
                 audioTrackIndex?.let { "audioTrackIndex=$it" },
                 subtitleTrackIndex?.let { "subtitleTrackIndex=$it" },
+                VideoPlayerRouteArgs.encodeResumePosition(resumePositionSeconds)
+                    ?.let { "${VideoPlayerRouteArgs.RESUME_POSITION}=$it" },
+                roomId?.takeIf { it.isNotBlank() }?.let { "roomId=${Uri.encode(it)}" },
             )
             if (queryParams.isNotEmpty()) {
                 append("?")
@@ -86,9 +151,54 @@ sealed class Route(val route: String) {
     ) {
         companion object {
             const val ROUTE =
-                "player/{contentId}?fileId={fileId}&audioTrackIndex={audioTrackIndex}&subtitleTrackIndex={subtitleTrackIndex}"
+                "player/{contentId}?fileId={fileId}&audioTrackIndex={audioTrackIndex}&subtitleTrackIndex={subtitleTrackIndex}&resumePosition={resumePosition}&roomId={roomId}"
         }
     }
+
+    // --- Watch Together (synchronized playback rooms) ---
+    data class WatchTogetherLobby(val roomId: String) : Route("watch_together/${Uri.encode(roomId)}") {
+        companion object {
+            const val ROUTE = "watch_together/{roomId}"
+            const val ARG_ROOM_ID = "roomId"
+        }
+    }
+
+    // --- Audiobook player (fullscreen, audio-only UI) ---
+    data class AudiobookPlayer(
+        val contentId: String,
+        val fileId: Int? = null,
+        val fromStart: Boolean = false,
+    ) : Route(
+        "audiobook/$contentId" +
+            listOfNotNull(
+                fileId?.let { "fileId=$it" },
+                if (fromStart) "fromStart=true" else null,
+            ).let { params -> if (params.isEmpty()) "" else "?" + params.joinToString("&") },
+    ) {
+        companion object {
+            const val ROUTE = "audiobook/{contentId}?fileId={fileId}&fromStart={fromStart}"
+            const val ARG_CONTENT_ID = "contentId"
+            const val ARG_FILE_ID = "fileId"
+            const val ARG_FROM_START = "fromStart"
+        }
+    }
+
+    // --- Book reader (fullscreen, dispatches by BookFormat) ---
+    data class BookReader(val contentId: String, val fileId: Int? = null) : Route(
+        "reader/$contentId" + fileId?.let { "?fileId=$it" }.orEmpty(),
+    ) {
+        companion object {
+            const val ROUTE = "reader/{contentId}?fileId={fileId}"
+            const val ARG_CONTENT_ID = "contentId"
+            const val ARG_FILE_ID = "fileId"
+        }
+    }
+
+    // --- Calendar / upcoming ---
+    data object Calendar : Route("calendar")
+
+    // --- Notifications ---
+    data object Inbox : Route("inbox")
 
     // --- Personal data ---
     data object Favorites : Route("favorites")
@@ -103,6 +213,4 @@ sealed class Route(val route: String) {
         }
     }
 
-    // --- Admin ---
-    data object Admin : Route("admin")
 }

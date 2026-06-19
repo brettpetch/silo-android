@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,8 +18,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -30,8 +35,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.continuum.app.android.ui.util.playbackResumePosition
+import com.continuum.app.common.overlays.CardOverlayVariant
+import com.continuum.app.common.overlays.CardOverlays
+import com.continuum.app.common.overlays.LocalCardOverlayUiState
 import com.continuum.app.common.ui.components.ThumbhashImage
 import com.continuum.app.model.catalog.EpisodeListItem
+import com.continuum.app.overlays.OverlayDataExtractor
 
 /**
  * Vertical list of episodes for a season.
@@ -45,8 +55,10 @@ import com.continuum.app.model.catalog.EpisodeListItem
 @Composable
 fun EpisodeList(
     episodes: List<EpisodeListItem>,
-    onEpisodePlayClick: (String) -> Unit,
+    onEpisodePlayClick: (String, Double?) -> Unit,
     onEpisodeDetailClick: (String) -> Unit,
+    onEpisodeDownloadClick: ((EpisodeListItem) -> Unit)? = null,
+    episodeDownloadState: (EpisodeListItem) -> DetailDownloadState = { DetailDownloadState() },
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -56,8 +68,10 @@ fun EpisodeList(
         episodes.forEach { episode ->
             EpisodeRow(
                 episode = episode,
-                onPlayClick = { onEpisodePlayClick(episode.contentId) },
+                onPlayClick = { onEpisodePlayClick(episode.contentId, playbackResumePosition(episode)) },
                 onDetailClick = { onEpisodeDetailClick(episode.contentId) },
+                onDownloadClick = onEpisodeDownloadClick?.let { cb -> { cb(episode) } },
+                downloadState = episodeDownloadState(episode),
             )
         }
     }
@@ -68,7 +82,10 @@ private fun EpisodeRow(
     episode: EpisodeListItem,
     onPlayClick: () -> Unit,
     onDetailClick: () -> Unit,
+    onDownloadClick: (() -> Unit)? = null,
+    downloadState: DetailDownloadState = DetailDownloadState(),
 ) {
+    val overlayState = LocalCardOverlayUiState.current
     val userData = episode.userData
     val isPlayed = userData?.played == true
     val pos = userData?.positionSeconds
@@ -95,6 +112,17 @@ private fun EpisodeRow(
                 contentDescription = episode.title,
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            // Card-overlay badge layer (resolution / codec / HDR, etc.).
+            // Over the still but under the play affordance + progress bar.
+            if (overlayState.enabled) {
+                CardOverlays(
+                    data = OverlayDataExtractor.fromEpisode(episode),
+                    prefs = overlayState.prefs,
+                    variant = CardOverlayVariant.Wide,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
 
             Box(
                 modifier = Modifier
@@ -182,6 +210,39 @@ private fun EpisodeRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+        }
+
+        // Trailing download control: ✓ when the episode is downloaded, a spinner
+        // while it's in flight, else the download arrow. Disabled when the episode
+        // has no files (rare guard) but layout-stable so the column doesn't reflow.
+        if (onDownloadClick != null) {
+            val hasFiles = episode.files.isNotEmpty()
+            IconButton(
+                onClick = onDownloadClick,
+                enabled = hasFiles,
+                modifier = Modifier.size(36.dp),
+            ) {
+                when {
+                    downloadState.isDownloaded -> Icon(
+                        imageVector = Icons.Filled.DownloadDone,
+                        contentDescription = "Downloaded",
+                        tint = DetailPrimaryText,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    downloadState.progress != null -> CircularProgressIndicator(
+                        progress = { downloadState.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = DetailPrimaryText,
+                    )
+                    else -> Icon(
+                        imageVector = Icons.Outlined.FileDownload,
+                        contentDescription = "Download episode",
+                        tint = if (hasFiles) DetailSecondaryText else DetailTertiaryText,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
             }
         }
     }

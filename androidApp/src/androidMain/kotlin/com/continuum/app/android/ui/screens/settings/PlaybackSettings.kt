@@ -19,6 +19,13 @@ import androidx.compose.ui.unit.dp
 private val qualityOptions = listOf("Auto", "Original", "1080p", "720p", "480p")
 private val languageOptions = listOf("Default", "English", "Spanish", "French", "German", "Japanese", "Korean", "Chinese", "Portuguese", "Italian", "Russian")
 
+// Discrete choices for the two behavior settings (0 = off). Dropdown idiom
+// matches the rest of this section; the label↔value maps below convert.
+private val resumeRewindOptions = listOf(0, 3, 5, 7, 10, 15, 20, 30)
+private val passOutThresholdOptions = listOf(0, 2, 3, 4, 5)
+private fun resumeRewindLabel(seconds: Int) = if (seconds <= 0) "Off" else "${seconds}s"
+private fun passOutThresholdLabel(count: Int) = if (count <= 0) "Off" else count.toString()
+
 /**
  * Playback settings section with quality preference, audio language,
  * and auto-skip toggles.
@@ -29,10 +36,14 @@ fun PlaybackSettings(
     audioLanguage: String,
     autoSkipIntro: Boolean,
     autoSkipCredits: Boolean,
+    resumeRewindSeconds: Int,
+    passOutThreshold: Int,
     onQualityChanged: (String) -> Unit,
     onAudioLanguageChanged: (String) -> Unit,
     onAutoSkipIntroChanged: (Boolean) -> Unit,
     onAutoSkipCreditsChanged: (Boolean) -> Unit,
+    onResumeRewindSecondsChanged: (Int) -> Unit,
+    onPassOutThresholdChanged: (Int) -> Unit,
     onResetPlaybackOverrides: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -65,6 +76,24 @@ fun PlaybackSettings(
             onCheckedChange = onAutoSkipCreditsChanged,
         )
 
+        SettingsDropdownRow(
+            label = "Resume Skip-Back",
+            value = resumeRewindLabel(resumeRewindSeconds),
+            options = resumeRewindOptions.map(::resumeRewindLabel),
+            onOptionSelected = { label ->
+                onResumeRewindSecondsChanged(resumeRewindOptions.first { resumeRewindLabel(it) == label })
+            },
+        )
+
+        SettingsDropdownRow(
+            label = "Still-Watching Prompt After",
+            value = passOutThresholdLabel(passOutThreshold),
+            options = passOutThresholdOptions.map(::passOutThresholdLabel),
+            onOptionSelected = { label ->
+                onPassOutThresholdChanged(passOutThresholdOptions.first { passOutThresholdLabel(it) == label })
+            },
+        )
+
         SettingsActionRow(
             label = "Reset Playback Overrides",
             onClick = onResetPlaybackOverrides,
@@ -78,10 +107,20 @@ private fun SettingsActionRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    SettingsRow(
-        label = label,
-        modifier = modifier.clickable(onClick = onClick),
-    ) {}
+    // iOS renders this as a destructive (red) button row.
+    androidx.compose.foundation.layout.Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
 }
 
 /**
@@ -104,8 +143,8 @@ fun SettingsDropdownRow(
         ) {
             Text(
                 text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 

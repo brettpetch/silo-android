@@ -8,6 +8,11 @@ import com.continuum.app.model.section.ResolvedSection
 import com.continuum.app.model.section.SectionItem
 import com.continuum.app.network.ApiResult
 import com.continuum.app.repository.SectionRepository
+import com.continuum.app.repository.port.HomeCachePort
+import com.continuum.app.repository.port.NoOpHomeCachePort
+import com.continuum.app.repository.port.LocalContentState
+import com.continuum.app.repository.port.NoOpUserItemStatePort
+import com.continuum.app.repository.port.UserItemStatePort
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +37,12 @@ data class HomeUiState(
 class HomeViewModel(
     private val sectionRepository: SectionRepository,
     private val mediaActions: MediaActionsCoordinator,
+    // Track B: offline home cache. Defaults to no-op so commonMain/tests stay
+    // network-only; the Android platform module binds a Room-backed cache.
+    private val homeCache: HomeCachePort = NoOpHomeCachePort,
+    // Track B: local optimistic user-state, overlaid onto cards so an offline
+    // mark-watched/favorite shows immediately instead of a stale cached badge.
+    private val userItemState: UserItemStatePort = NoOpUserItemStatePort,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -43,7 +54,15 @@ class HomeViewModel(
 
     fun loadSections() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+            // Stale-while-revalidate: serve the cached home instantly (offline-
+            // capable), then refresh from the network below.
+            val cached = homeCache.getCachedHome()
+            if (cached != null && cached.sections.isNotEmpty()) {
+                val overlaid = overlayLocalState(cached.sections)
+                _uiState.update { it.copy(isLoading = false, sections = overlaid, error = null) }
+            } else {
+                _uiState.update { it.copy(isLoading = true, error = null) }
+            }
             fetchSections()
         }
     }
@@ -56,33 +75,74 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Overlay local optimistic watched/favorite onto card user_state (local non-null
+     * wins; watchlist stays server — no local projection). Makes an offline mutation
+     * show immediately instead of the stale server snapshot baked into a cached card.
+     */
+    private suspend fun overlayLocalState(sections: List<ResolvedSection>): List<ResolvedSection> {
+        val ids = sections.flatMap { section -> section.items.map { it.contentId } }.distinct()
+        if (ids.isEmpty()) return sections
+        val local: Map<String, LocalContentState> = userItemState.localContentStates(ids)
+        if (local.isEmpty()) return sections
+        return sections.map { section ->
+            section.copy(
+                items = section.items.map { item ->
+                    val ls = local[item.contentId] ?: return@map item
+                    val base = item.userState ?: MediaItemUserState()
+                    item.copy(
+                        userState = base.copy(
+                            played = ls.watched ?: base.played,
+                            isFavorite = ls.favorite ?: base.isFavorite,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
     private suspend fun fetchSections() {
+        // Whether we already have something to show (cached or prior fetch) — if a
+        // refresh fails we keep it rather than replacing it with a blocking error.
+        val hadSections = _uiState.value.sections.isNotEmpty()
         when (val result = sectionRepository.getHomeSections()) {
             is ApiResult.Success -> {
                 val sections = result.data.sections
-                val resolved: List<ResolvedSection> = sections.map { section ->
+                val resolvedPairs: List<Pair<ResolvedSection, Boolean>> = sections.map { section ->
                     viewModelScope.async {
-                        val itemsResult = sectionRepository.getHomeSectionItems(section.id)
-                        when (itemsResult) {
-                            is ApiResult.Success -> itemsResult.data.section ?: section
-                            else -> section
+                        when (val itemsResult = sectionRepository.getHomeSectionItems(section.id)) {
+                            is ApiResult.Success -> (itemsResult.data.section ?: section) to true
+                            else -> section to false
                         }
                     }
-                }.awaitAll().filter { it.items.isNotEmpty() }
+                }.awaitAll()
+                val resolved = resolvedPairs.map { it.first }.filter { it.items.isNotEmpty() }
+                // Don't persist a partially-resolved home over a good cached one.
+                val fullyResolved = resolvedPairs.all { it.second }
 
+                // Cache the RAW server sections (snapshot), but display with the
+                // local optimistic overlay applied.
+                if (fullyResolved) {
+                    homeCache.cacheHome(resolved)
+                }
+                val overlaid = overlayLocalState(resolved)
                 _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        sections = resolved,
-                        error = null,
-                    )
+                    // Only replace what's shown when the fetch fully resolved (or there
+                    // was nothing yet) — a partial refresh must not clobber a good Home.
+                    if (fullyResolved || !hadSections) {
+                        it.copy(isLoading = false, sections = overlaid, error = null)
+                    } else {
+                        it.copy(isLoading = false, error = null)
+                    }
                 }
             }
             is ApiResult.Error -> {
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        error = result.message.ifBlank { "Failed to load home sections" },
+                        // Keep cached/prior sections on a failed refresh; only block
+                        // with an error when there's nothing to show.
+                        error = if (hadSections) null else result.message.ifBlank { "Failed to load home sections" },
                     )
                 }
             }
@@ -90,7 +150,7 @@ class HomeViewModel(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        error = "Network error. Check your connection.",
+                        error = if (hadSections) null else "Network error. Check your connection.",
                     )
                 }
             }

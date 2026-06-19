@@ -1,6 +1,5 @@
 package com.continuum.app.android.ui.screens.home
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,8 +19,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,43 +44,45 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.continuum.app.android.ui.components.ContinuumWordmark
 import com.continuum.app.android.ui.components.EmptyStateView
 import com.continuum.app.android.ui.components.ErrorView
-import com.continuum.app.android.ui.components.HeroBackdropImage
-import com.continuum.app.android.ui.components.HeroTintBackground
 import com.continuum.app.android.ui.components.LoadingIndicator
 import com.continuum.app.android.ui.screens.profiles.ProfileAvatar
-import com.continuum.app.android.ui.util.rememberDominantColor
 import com.continuum.app.model.profile.Profile
 import com.continuum.app.model.section.splitFeatured
+import com.continuum.app.repository.NotificationsRepository
 import com.continuum.app.viewmodel.HomeViewModel
+import org.koin.compose.koinInject
 
 private const val ChromeFadeDistanceDp = 72f
 
 /**
  * Phone Home screen.
  *
- * Mirrors iOS `HomeView.swift` 1:1: a page-level blurred backdrop sampled
- * from the active hero, a tinted gradient that fades into the OLED base
- * behind the section rows, a floating top chrome (avatar + search + menu)
- * that fades in as content scrolls under it, and the featured carousel +
- * section rows themselves. The screen owns its own top inset and ignores
- * the parent Scaffold's status-bar padding so the backdrop reaches behind
- * the status bar.
+ * Mirrors iOS `HomeView.swift` (phone) 1:1: a flat OLED background (no hero —
+ * iOS deliberately excludes `featured` sections from Home so the configured
+ * Home rows render without a separate hero surface), a runway spacer that
+ * reserves room under the floating chrome, the resume-first section rows, and
+ * a floating top chrome (wordmark + search + profile menu) that fades in a
+ * subtle glass surface as content scrolls underneath it. The screen owns its
+ * own top inset so the chrome floats over the status bar.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onItemClick: (String) -> Unit,
-    onPlayClick: (String) -> Unit,
+    onPlayClick: (String, Double?) -> Unit,
     onSeeAllClick: (String) -> Unit,
     viewModel: HomeViewModel,
     activeProfile: Profile?,
     onSearchClick: () -> Unit,
     onPersonalListsClick: () -> Unit,
+    onCalendarClick: () -> Unit,
+    onInboxClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSwitchProfileClick: () -> Unit,
     onSwitchServerClick: () -> Unit,
@@ -85,12 +90,11 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val sections = state.sections
-    val (featuredSection, regularSections) = remember(sections) {
-        sections.splitFeatured().let { it.featured to it.rest }
+    // iOS Home excludes `featured` sections entirely (HomeViewModel.regularSections)
+    // — Home renders only the configured rows, never a hero billboard.
+    val regularSections = remember(sections) {
+        sections.splitFeatured().rest.filter { it.items.isNotEmpty() }
     }
-
-    var heroBackdropUrl by rememberSaveable { mutableStateOf<String?>(null) }
-    var heroBackdropThumbhash by rememberSaveable { mutableStateOf<String?>(null) }
 
     val listState = rememberLazyListState()
     val density = LocalDensity.current
@@ -107,34 +111,20 @@ fun HomeScreen(
         }
     }
 
-    val heroTint by rememberDominantColor(
-        imageUrl = heroBackdropUrl,
-        fallback = MaterialTheme.colorScheme.background,
-    )
-
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        // Page-level tint gradient, behind everything.
-        HeroTintBackground(tint = heroTint)
-
-        // Blurred backdrop image — full-bleed, ignores top inset, fades to clear.
-        HeroBackdropImage(
-            url = heroBackdropUrl,
-            thumbhash = heroBackdropThumbhash,
-        )
-
         when {
-            state.isLoading && sections.isEmpty() -> LoadingIndicator()
-            state.error != null && sections.isEmpty() -> ErrorView(
+            state.isLoading && regularSections.isEmpty() -> LoadingIndicator()
+            state.error != null && regularSections.isEmpty() -> ErrorView(
                 message = state.error ?: "Something went wrong",
                 onRetry = { viewModel.loadSections() },
             )
-            sections.isEmpty() -> EmptyStateView(
-                title = "No content yet",
-                subtitle = "Once your library is scanned, it'll appear here.",
+            regularSections.isEmpty() -> EmptyStateView(
+                title = "Nothing to watch yet",
+                subtitle = "Add media to your libraries or start watching to see it here.",
             )
             else -> PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
@@ -144,35 +134,25 @@ fun HomeScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
+                    // iOS `sectionSpacing` = ContinuumTheme.largePadding (24).
                     verticalArrangement = Arrangement.spacedBy(24.dp),
                 ) {
-                    if (featuredSection != null && featuredSection.items.isNotEmpty()) {
-                        item(key = "featured") {
-                            FeaturedCarousel(
-                                items = featuredSection.items,
-                                onPlayClick = onPlayClick,
-                                onInfoClick = onItemClick,
-                                onActiveBackdropChange = { url, thumbhash ->
-                                    heroBackdropUrl = url
-                                    heroBackdropThumbhash = thumbhash
-                                },
-                            )
-                        }
-                    } else {
-                        // No hero → reserve runway under the floating header so
-                        // the first row doesn't slide under the status bar chrome.
-                        item(key = "noFeatured") {
-                            Spacer(
-                                modifier = Modifier
-                                    .windowInsetsPadding(WindowInsets.statusBars)
-                                    .height(72.dp),
-                            )
-                        }
+                    // Reserve runway under the floating header so the first row
+                    // doesn't slide under the status-bar chrome. iOS runway =
+                    // topInset + 40 + smallPadding(8) + largePadding(24) +
+                    // smallPadding(8) - headerTopReclaim(16) = topInset + 64.
+                    item(key = "topRunway") {
+                        Spacer(
+                            modifier = Modifier
+                                .windowInsetsPadding(WindowInsets.statusBars)
+                                .height(64.dp),
+                        )
                     }
 
                     items(
                         items = regularSections,
                         key = { it.id },
+                        contentType = { "section-row" },
                     ) { section ->
                         HomeSectionRow(
                             section = section,
@@ -189,19 +169,22 @@ fun HomeScreen(
                         )
                     }
 
+                    // iOS bottom padding = ContinuumTheme.largePadding (24).
                     item(key = "bottomPad") {
-                        Spacer(modifier = Modifier.height(80.dp))
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
             }
         }
 
-        // Floating top chrome — fades in as the user scrolls under it.
+        // Floating top chrome — fades in a glass surface as content scrolls under.
         HomeFloatingChrome(
             scrollProgress = scrollProgress,
             activeProfile = activeProfile,
             onSearchClick = onSearchClick,
             onPersonalListsClick = onPersonalListsClick,
+            onCalendarClick = onCalendarClick,
+            onInboxClick = onInboxClick,
             onSettingsClick = onSettingsClick,
             onSwitchProfileClick = onSwitchProfileClick,
             onSwitchServerClick = onSwitchServerClick,
@@ -215,52 +198,87 @@ private fun HomeFloatingChrome(
     activeProfile: Profile?,
     onSearchClick: () -> Unit,
     onPersonalListsClick: () -> Unit,
+    onCalendarClick: () -> Unit,
+    onInboxClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSwitchProfileClick: () -> Unit,
     onSwitchServerClick: () -> Unit,
 ) {
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues()
-    val animatedFill by animateFloatAsState(
-        targetValue = scrollProgress,
-        label = "chromeFill",
-    )
-
+    // iOS chrome: translucent glass fill plus a bottom hairline that strengthens
+    // as it fades in (white 0.06 → 0.10, 0.75pt). headerTopReclaim(16) pulls the
+    // row up beside the status-bar glyphs; horizontal = ContinuumTheme.padding(16),
+    // bottom = ContinuumTheme.smallPadding(8).
+    val hairlineAlpha = 0.06f + 0.04f * scrollProgress
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Brush.verticalGradient(
-                    0.0f to MaterialTheme.colorScheme.background.copy(alpha = 0.32f * animatedFill),
-                    1.0f to MaterialTheme.colorScheme.background.copy(alpha = 0f),
-                ),
-            )
-            .padding(
-                top = statusBarPadding.calculateTopPadding() + 6.dp,
-                start = 16.dp,
-                end = 16.dp,
-                bottom = 8.dp,
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.32f * scrollProgress),
             ),
     ) {
-        androidx.compose.foundation.layout.Row(
-            modifier = Modifier.align(Alignment.CenterEnd),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Box(
+            modifier = Modifier
+                .padding(top = statusBarPadding.calculateTopPadding())
+                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                .fillMaxWidth(),
         ) {
-            HomeChromeButton(onClick = onSearchClick) {
-                Icon(
-                    imageVector = Icons.Outlined.Search,
-                    contentDescription = "Search",
+            // Leading: Silo wordmark (iOS SiloWordmarkView width: 72).
+            ContinuumWordmark(
+                modifier = Modifier
+                    .align(Alignment.CenterStart),
+                width = 72.dp,
+            )
+
+            // Trailing: search + notifications + profile menu cluster.
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HomeChromeButton(onClick = onSearchClick) {
+                    Icon(
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = "Search",
+                    )
+                }
+
+                val notificationsRepository = koinInject<NotificationsRepository>()
+                val unreadCount by notificationsRepository.unreadCount.collectAsState()
+                HomeChromeButton(onClick = onInboxClick) {
+                    BadgedBox(
+                        badge = {
+                            if (unreadCount > 0) {
+                                Badge { Text(if (unreadCount > 99) "99+" else unreadCount.toString()) }
+                            }
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Notifications,
+                            contentDescription = "Notifications",
+                        )
+                    }
+                }
+
+                HomeProfileMenu(
+                    activeProfile = activeProfile,
+                    onPersonalListsClick = onPersonalListsClick,
+                    onCalendarClick = onCalendarClick,
+                    onSettingsClick = onSettingsClick,
+                    onSwitchProfileClick = onSwitchProfileClick,
+                    onSwitchServerClick = onSwitchServerClick,
                 )
             }
-
-            HomeProfileMenu(
-                activeProfile = activeProfile,
-                onPersonalListsClick = onPersonalListsClick,
-                onSettingsClick = onSettingsClick,
-                onSwitchProfileClick = onSwitchProfileClick,
-                onSwitchServerClick = onSwitchServerClick,
-            )
         }
+
+        // Bottom hairline border (iOS 0.75pt, white 0.06–0.10).
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(0.75.dp)
+                .background(Color.White.copy(alpha = hairlineAlpha)),
+        )
     }
 }
 
@@ -269,22 +287,16 @@ private fun HomeChromeButton(
     onClick: () -> Unit,
     content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
 ) {
+    // iOS top-bar icon buttons are bare 40x40 tap targets (no chip background).
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outline,
-        ),
     ) {
         Box(
-            modifier = Modifier
-                .size(40.dp)
-                .padding(4.dp),
+            modifier = Modifier.size(40.dp),
             contentAlignment = Alignment.Center,
             content = content,
         )
@@ -295,6 +307,7 @@ private fun HomeChromeButton(
 private fun HomeProfileMenu(
     activeProfile: Profile?,
     onPersonalListsClick: () -> Unit,
+    onCalendarClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSwitchProfileClick: () -> Unit,
     onSwitchServerClick: () -> Unit,
@@ -303,15 +316,16 @@ private fun HomeProfileMenu(
     Box {
         HomeChromeButton(onClick = { menuExpanded = true }) {
             if (activeProfile != null) {
+                // iOS ProfileAvatarView size: 36.
                 ProfileAvatar(
                     avatar = activeProfile.avatar,
                     name = activeProfile.name,
-                    size = 32.dp,
+                    size = 36.dp,
                 )
             } else {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)),
                     contentAlignment = Alignment.Center,
@@ -333,6 +347,19 @@ private fun HomeProfileMenu(
                 onClick = {
                     menuExpanded = false
                     onPersonalListsClick()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Calendar") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.CalendarMonth,
+                        contentDescription = null,
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onCalendarClick()
                 },
             )
             DropdownMenuItem(

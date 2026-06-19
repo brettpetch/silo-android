@@ -52,59 +52,67 @@ fun TvHoldSeekIndicator(
         exit = fadeOut(),
         modifier = modifier,
     ) {
-        Surface(
-            color = Color.Black.copy(alpha = 0.78f),
-            shape = RoundedCornerShape(24.dp),
+        // Vertical chip-over-bar-over-hint layout (mirrors tvOS
+        // HoldSeekIndicator): a pill chip with a large rate label + preview
+        // time on top, a wide read-only progress bar in the middle, and a
+        // dim hint row at the bottom.
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            // Chip: direction-signed rate (large) + preview time.
+            Surface(
+                color = Color.Black.copy(alpha = 0.42f),
+                shape = RoundedCornerShape(percent = 50),
             ) {
                 Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
                     Text(
                         text = formatRate(rate),
                         color = Color.White,
                         fontSize = 22.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace,
                     )
-
-                    val progress = if (durationSec > 0.0) {
-                        (previewTimeSec / durationSec).toFloat().coerceIn(0f, 1f)
-                    } else 0f
-                    Box(
-                        modifier = Modifier
-                            .width(240.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color.White.copy(alpha = 0.22f)),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress)
-                                .height(4.dp)
-                                .background(Color.White, RoundedCornerShape(2.dp)),
-                        )
-                    }
-
                     Text(
                         text = formatTime(previewTimeSec, durationSec),
-                        color = Color.White,
+                        color = Color.White.copy(alpha = 0.75f),
                         fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-
-                Text(
-                    text = "← → speed  ·  ◉ play  ·  ↩ cancel",
-                    color = Color.White.copy(alpha = 0.60f),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                )
             }
+
+            // Wide read-only progress bar.
+            if (durationSec > 0.0) {
+                val progress = (previewTimeSec / durationSec).toFloat().coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .width(260.dp)
+                        .height(2.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(Color.White.copy(alpha = 0.22f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .height(2.dp)
+                            .background(Color.White, RoundedCornerShape(1.dp)),
+                    )
+                }
+            }
+
+            // Hint row.
+            Text(
+                text = "← → speed  ·  ◉ play  ·  ↩ cancel",
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+            )
         }
     }
 }

@@ -13,11 +13,26 @@ data class MediaItemUserState(
     @SerialName("in_watchlist") val inWatchlist: Boolean = false
 )
 
+/**
+ * Tech-level overlay summary derived server-side from the best-ranked file
+ * (see silo-server `internal/overlays/summary.go`). Wire keys match the server
+ * JSON and Apple's `OverlaySummary` (which decodes via `.convertFromSnakeCase`,
+ * so `audioChannels` ⇄ `audio_channels`, etc.). `audioChannels` arrives
+ * pre-formatted (e.g. "5.1", "7.1", "Stereo").
+ */
 @Serializable
 data class OverlaySummary(
     val resolution: String? = null,
+    val hdr: String? = null,
     val audio: String? = null,
-    @SerialName("release_type") val releaseType: String? = null
+    @SerialName("audio_channels") val audioChannels: String? = null,
+    @SerialName("video_codec") val videoCodec: String? = null,
+    val container: String? = null,
+    @SerialName("aspect_ratio") val aspectRatio: String? = null,
+    @SerialName("release_type") val releaseType: String? = null,
+    val edition: String? = null,
+    @SerialName("multi_audio") val multiAudio: Boolean? = null,
+    @SerialName("multi_sub") val multiSub: Boolean? = null
 )
 
 @Serializable
@@ -30,6 +45,14 @@ data class BrowseItem(
     @SerialName("content_rating") val contentRating: String? = null,
     val status: String? = null,
     @SerialName("rating_imdb") val ratingImdb: Double? = null,
+    @SerialName("rating_tmdb") val ratingTmdb: Double? = null,
+    @SerialName("rating_rt_critic") val ratingRtCritic: Int? = null,
+    @SerialName("rating_rt_audience") val ratingRtAudience: Int? = null,
+    val runtime: Int? = null,
+    @SerialName("original_language") val originalLanguage: String? = null,
+    val studios: List<String> = emptyList(),
+    val networks: List<String> = emptyList(),
+    @SerialName("show_status") val showStatus: String? = null,
     val overview: String? = null,
     @SerialName("poster_url") val posterUrl: String? = null,
     @SerialName("poster_thumbhash") val posterThumbhash: String? = null,
@@ -84,6 +107,8 @@ data class ItemDetail(
     val title: String,
     @SerialName("sort_title") val sortTitle: String? = null,
     @SerialName("original_title") val originalTitle: String? = null,
+    @SerialName("original_language") val originalLanguage: String? = null,
+    @SerialName("show_status") val showStatus: String? = null,
     val year: Int = 0,
     val overview: String? = null,
     val tagline: String? = null,
@@ -120,10 +145,21 @@ data class ItemDetail(
     @SerialName("air_date") val airDate: String? = null,
     @SerialName("is_specials") val isSpecials: Boolean? = null,
     @SerialName("user_data") val userData: LeafItemUserData? = null,
+    /** The current user's personal star rating (1-5), when set. */
+    @SerialName("user_rating") val userRating: Int? = null,
     val versions: List<FileVersion> = emptyList(),
     val subtitles: List<SubtitleInfo> = emptyList(),
+    @SerialName("overlay_summary") val overlaySummary: OverlaySummary? = null,
     val intro: TimeRange? = null,
-    val credits: TimeRange? = null
+    val credits: TimeRange? = null,
+    /** Populated only when [type] is "audiobook". Forward-compat — the
+     *  server may stop returning it once a dedicated /api/v1/audiobooks
+     *  endpoint lands; until then it rides on ItemDetail. */
+    val audiobook: com.continuum.app.model.audiobook.AudiobookMetadata? = null,
+    /** Legacy fallback for older servers that emitted book-like metadata. */
+    val book: com.continuum.app.model.book.BookMetadata? = null,
+    /** Populated only when [type] is "ebook" on current servers. */
+    val ebook: com.continuum.app.model.ebook.EbookMetadata? = null,
 )
 
 @Serializable
@@ -171,7 +207,30 @@ data class FileVersion(
     @SerialName("added_at") val addedAt: String? = null,
     @SerialName("video_tracks") val videoTracks: List<VideoTrack>? = null,
     @SerialName("audio_tracks") val audioTracks: List<AudioTrack>? = null,
-    @SerialName("subtitle_tracks") val subtitleTracks: List<SubtitleTrack>? = null
+    @SerialName("subtitle_tracks") val subtitleTracks: List<SubtitleTrack>? = null,
+    val chapters: List<VersionChapter>? = null
+)
+
+/**
+ * One chapter on a playable file version. Populated server-side by FFprobe
+ * during ingest (`source = "embedded"` for chapters read out of MP4/MKV
+ * metadata). The server normalizes overlaps, sorts out-of-order entries,
+ * strips zero-length chapters, and generates fallback titles when needed —
+ * the client renders whatever it receives.
+ *
+ * Shape mirrors the server's `VersionChapter` struct at
+ * `silo-server/internal/catalog/detail.go:258-266` and Apple's
+ * `VersionChapter` at `iosApp/Networking/Models.swift:537-545` exactly.
+ */
+@Serializable
+data class VersionChapter(
+    val index: Int = 0,
+    val title: String = "",
+    @SerialName("start_seconds") val startSeconds: Double = 0.0,
+    @SerialName("end_seconds") val endSeconds: Double = 0.0,
+    val source: String? = null,
+    @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
+    @SerialName("thumbnail_thumbhash") val thumbnailThumbhash: String? = null,
 )
 
 @Serializable
@@ -200,12 +259,12 @@ data class AudioTrack(
     val index: Int = 0,
     val codec: String? = null,
     val channels: Int? = null,
-    @SerialName("channel_layout") val channelLayout: String? = null,
+    @SerialName("layout") val channelLayout: String? = null,
     val bitrate: Int? = null,
     @SerialName("sample_rate") val sampleRate: Int? = null,
     val language: String? = null,
     val title: String? = null,
-    @SerialName("is_default") val isDefault: Boolean = false
+    @SerialName("default") val isDefault: Boolean = false
 )
 
 @Serializable
@@ -215,7 +274,7 @@ data class SubtitleTrack(
     val language: String? = null,
     val title: String? = null,
     val forced: Boolean = false,
-    @SerialName("is_default") val isDefault: Boolean = false,
+    @SerialName("default") val isDefault: Boolean = false,
     val external: Boolean = false,
     @SerialName("external_path") val externalPath: String? = null
 )
@@ -340,14 +399,24 @@ data class WatchDetail(
     @SerialName("episode_number") val episodeNumber: Int? = null,
     @SerialName("effective_subtitle_language") val effectiveSubtitleLanguage: String? = null,
     @SerialName("effective_subtitle_mode") val effectiveSubtitleMode: String? = null,
-    @SerialName("effective_show_forced_subtitles") val effectiveShowForcedSubtitles: Boolean? = null
+    @SerialName("effective_show_forced_subtitles") val effectiveShowForcedSubtitles: Boolean? = null,
+    // Presigned image URLs — match the server's ItemDetail response
+    // (silo-server/internal/catalog/detail.go:100-104). Consumed by the
+    // phone player's Now Playing lock-screen metadata; TV side reads
+    // them too for the same purpose when the MediaSession-driven
+    // notification surfaces (system media controls).
+    @SerialName("poster_url") val posterUrl: String? = null,
+    @SerialName("poster_thumbhash") val posterThumbhash: String? = null,
+    @SerialName("backdrop_url") val backdropUrl: String? = null,
+    @SerialName("backdrop_thumbhash") val backdropThumbhash: String? = null,
+    @SerialName("logo_url") val logoUrl: String? = null,
 )
 
 // --- Person ---
 
 @Serializable
 data class Person(
-    val id: Int,
+    val id: Long,
     val name: String,
     val bio: String? = null,
     @SerialName("birth_date") val birthDate: String? = null,

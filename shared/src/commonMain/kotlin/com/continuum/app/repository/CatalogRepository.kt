@@ -10,9 +10,14 @@ import com.continuum.app.model.catalog.SeasonsResponse
 import com.continuum.app.model.catalog.WatchDetail
 import com.continuum.app.network.ApiResult
 import com.continuum.app.network.api.CatalogApi
+import com.continuum.app.repository.port.CatalogCachePort
+import com.continuum.app.repository.port.NoOpCatalogCachePort
+import com.continuum.app.repository.port.canServeCache
 
 class CatalogRepository(
     private val catalogApi: CatalogApi,
+    /** Offline read cache for a library's default first page (Track B). No-op by default. */
+    private val catalogCache: CatalogCachePort = NoOpCatalogCachePort,
 ) {
     /** Browse the catalog with optional filters, sorting, and pagination. */
     suspend fun browse(
@@ -30,8 +35,8 @@ class CatalogRepository(
         yearMin: Int? = null,
         yearMax: Int? = null,
         snapshotAt: String? = null,
-    ): ApiResult<CatalogResponse> =
-        catalogApi.getCatalog(
+    ): ApiResult<CatalogResponse> {
+        val result = catalogApi.getCatalog(
             source = source,
             query = query,
             mediaType = mediaType,
@@ -48,25 +53,76 @@ class CatalogRepository(
             snapshotAt = snapshotAt,
         )
 
+        // Only the unfiltered, first-page default browse of a single library is
+        // cached for offline (every request-shaping param must be at its default).
+        val cacheableLibraryId = libraryId?.takeIf {
+            (offset == null || offset == 0) &&
+                query == null && genre == null && contentRating == null &&
+                namePrefix == null && yearMin == null && yearMax == null &&
+                source == null && mediaType == null && snapshotAt == null &&
+                (sort == null || sort == "added_at") && (order == null || order == "desc")
+        } ?: return result
+
+        if (result is ApiResult.Success) {
+            catalogCache.cacheDefaultLibraryPage(cacheableLibraryId, result.data)
+            return result
+        }
+        if (result.canServeCache()) {
+            catalogCache.getCachedDefaultLibraryPage(cacheableLibraryId)?.let { return ApiResult.Success(it) }
+        }
+        return result
+    }
+
     /** Returns available filter options (genres, studios, etc.) for the catalog. */
     suspend fun getFilters(libraryId: Int? = null): ApiResult<CatalogFiltersResponse> =
         catalogApi.getFilters(libraryId)
 
-    /** Fetches full metadata for a single catalog item. */
-    suspend fun getItemDetail(contentId: String): ApiResult<ItemDetail> =
-        catalogApi.getItemDetail(contentId)
+    /** Fetches full metadata for a single catalog item (offline: last cached detail). */
+    suspend fun getItemDetail(contentId: String): ApiResult<ItemDetail> {
+        val result = catalogApi.getItemDetail(contentId)
+        if (result is ApiResult.Success) {
+            catalogCache.cacheItemDetail(contentId, result.data)
+            return result
+        }
+        if (result.canServeCache()) {
+            catalogCache.getCachedItemDetail(contentId)?.let { return ApiResult.Success(it) }
+        }
+        return result
+    }
+
+    /** Returns the last cached item detail without touching the network. */
+    suspend fun getCachedItemDetail(contentId: String): ItemDetail? =
+        catalogCache.getCachedItemDetail(contentId)
 
     /** Fetches playback-oriented detail (versions, user progress, intro/credits markers). */
     suspend fun getWatchDetail(contentId: String): ApiResult<WatchDetail> =
         catalogApi.getWatchDetail(contentId)
 
-    /** Lists seasons for a series. */
-    suspend fun getSeasons(seriesId: String): ApiResult<SeasonsResponse> =
-        catalogApi.getSeasons(seriesId)
+    /** Lists seasons for a series (offline: last cached seasons). */
+    suspend fun getSeasons(seriesId: String): ApiResult<SeasonsResponse> {
+        val result = catalogApi.getSeasons(seriesId)
+        if (result is ApiResult.Success) {
+            catalogCache.cacheSeasons(seriesId, result.data)
+            return result
+        }
+        if (result.canServeCache()) {
+            catalogCache.getCachedSeasons(seriesId)?.let { return ApiResult.Success(it) }
+        }
+        return result
+    }
 
-    /** Lists episodes for a specific season of a series. */
-    suspend fun getEpisodes(seriesId: String, seasonNumber: Int): ApiResult<EpisodesResponse> =
-        catalogApi.getEpisodes(seriesId, seasonNumber)
+    /** Lists episodes for a specific season of a series (offline: last cached episodes). */
+    suspend fun getEpisodes(seriesId: String, seasonNumber: Int): ApiResult<EpisodesResponse> {
+        val result = catalogApi.getEpisodes(seriesId, seasonNumber)
+        if (result is ApiResult.Success) {
+            catalogCache.cacheEpisodes(seriesId, seasonNumber, result.data)
+            return result
+        }
+        if (result.canServeCache()) {
+            catalogCache.getCachedEpisodes(seriesId, seasonNumber)?.let { return ApiResult.Success(it) }
+        }
+        return result
+    }
 
     /** Lists all episodes directly attached to an item (e.g. a season content ID). */
     suspend fun getItemEpisodes(contentId: String): ApiResult<EpisodesResponse> =
@@ -81,15 +137,22 @@ class CatalogRepository(
         catalogApi.searchPeople(query)
 
     /** Fetches details for a specific person. */
-    suspend fun getPerson(id: Int): ApiResult<Person> =
+    suspend fun getPerson(id: Long): ApiResult<Person> =
         catalogApi.getPerson(id)
 
     /** Filmography for a person — movies and series they appear in. */
     suspend fun getPersonItems(
-        personId: Int,
+        personId: Long,
         mediaType: String? = null,
         offset: Int? = null,
         limit: Int? = null,
+        snapshotAt: String? = null,
     ): ApiResult<CatalogResponse> =
-        catalogApi.getPersonItems(personId, mediaType, offset, limit)
+        catalogApi.getPersonItems(
+            personId = personId,
+            mediaType = mediaType,
+            offset = offset,
+            limit = limit,
+            snapshotAt = snapshotAt,
+        )
 }

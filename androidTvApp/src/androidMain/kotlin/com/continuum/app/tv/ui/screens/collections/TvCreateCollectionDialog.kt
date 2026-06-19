@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,8 +23,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Button
 import androidx.tv.material3.Card
@@ -33,18 +35,22 @@ import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.continuum.app.tv.ui.components.TvFilterChip
+import com.continuum.app.tv.ui.components.tvOutlinedTextFieldColors
 
 /**
  * Dialog for creating a new user collection. Contains a [OutlinedTextField]
- * bound to a local name state and a Create button that calls back with the
- * entered name. The parent owns the loading / error state — we just render
- * whatever it tells us.
+ * bound to a local name state, a Manual/Smart type selector (mirroring the
+ * phone's CreateCollectionSheet), and a Create button. The parent owns the
+ * loading / error / selected-type state — we just render and call back.
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun TvCreateCollectionDialog(
     isCreating: Boolean,
     errorMessage: String?,
+    selectedType: String,
+    onTypeChanged: (String) -> Unit,
     onDismiss: () -> Unit,
     onCreate: (name: String) -> Unit,
 ) {
@@ -59,17 +65,17 @@ fun TvCreateCollectionDialog(
         ) {
             Card(
                 onClick = {},
-                shape = CardDefaults.shape(shape = RoundedCornerShape(24.dp)),
+                shape = CardDefaults.shape(shape = RoundedCornerShape(12.dp)),
             ) {
                 Column(
                     modifier = Modifier
-                        .width(640.dp)
-                        .padding(48.dp),
-                    verticalArrangement = Arrangement.spacedBy(24.dp),
+                        .width(320.dp)
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
                         text = "New Collection",
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = TvCreateCollectionTextStyles.Title,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                     OutlinedTextField(
@@ -78,57 +84,82 @@ fun TvCreateCollectionDialog(
                         label = {
                             androidx.compose.material3.Text(
                                 text = "Name",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = TvCreateCollectionTextStyles.FieldLabel,
                             )
                         },
                         singleLine = true,
                         enabled = !isCreating,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        colors = OutlinedTextFieldDefaults.colors(
+                        textStyle = TvCreateCollectionTextStyles.Field,
+                        colors = tvOutlinedTextFieldColors(
                             focusedContainerColor = MaterialTheme.colorScheme.surface,
                             unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                            focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            cursorColor = MaterialTheme.colorScheme.primary,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = Color.Transparent,
+                            focusedBorderColor = Color.White.copy(alpha = 0.86f),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(72.dp),
+                            .height(41.dp),
+                    )
+                    Text(
+                        text = "Type",
+                        style = TvCreateCollectionTextStyles.FieldLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TvFilterChip(
+                            text = "Manual",
+                            selected = selectedType == "manual",
+                            onClick = { onTypeChanged("manual") },
+                        )
+                        TvFilterChip(
+                            text = "Smart",
+                            selected = selectedType == "smart",
+                            onClick = { onTypeChanged("smart") },
+                        )
+                    }
+                    Text(
+                        text = if (selectedType == "smart") {
+                            "Automatically populated by rules."
+                        } else {
+                            "Manually add and organize items."
+                        },
+                        style = TvCreateCollectionTextStyles.Error.copy(fontWeight = FontWeight.Normal),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (errorMessage != null) {
                         Text(
                             text = errorMessage,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = TvCreateCollectionTextStyles.Error,
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Spacer(modifier = Modifier.weight(1f))
                         Button(
                             onClick = onDismiss,
                             contentPadding = PaddingValues(
-                                horizontal = 32.dp,
-                                vertical = 12.dp,
+                                horizontal = 16.dp,
+                                vertical = 6.dp,
                             ),
                         ) {
-                            Text(text = "Cancel", style = MaterialTheme.typography.titleSmall)
+                            Text(text = "Cancel", style = TvCreateCollectionTextStyles.Button)
                         }
                         Button(
-                            onClick = { onCreate(name) },
+                            onClick = { if (!isCreating && name.isNotBlank()) onCreate(name) },
+                            enabled = !isCreating,
                             contentPadding = PaddingValues(
-                                horizontal = 32.dp,
-                                vertical = 12.dp,
+                                horizontal = 16.dp,
+                                vertical = 6.dp,
                             ),
                         ) {
                             Text(
                                 text = if (isCreating) "Creating..." else "Create",
-                                style = MaterialTheme.typography.titleSmall,
+                                style = TvCreateCollectionTextStyles.Button,
                             )
                         }
                     }
@@ -136,4 +167,42 @@ fun TvCreateCollectionDialog(
             }
         }
     }
+}
+
+private object TvCreateCollectionTextStyles {
+    val Title = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 16.sp,
+        lineHeight = 17.sp,
+        letterSpacing = 0.sp,
+    )
+
+    val FieldLabel = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        lineHeight = 22.sp,
+        letterSpacing = 0.sp,
+    )
+
+    val Field = TextStyle(
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.sp,
+        color = Color.White,
+    )
+
+    val Error = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        lineHeight = 22.sp,
+        letterSpacing = 0.sp,
+    )
+
+    val Button = TextStyle(
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 18.sp,
+        lineHeight = 22.sp,
+        letterSpacing = 0.sp,
+    )
 }

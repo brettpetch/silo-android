@@ -14,6 +14,8 @@ open class ProfileRepository(
     private val profileApi: ProfileApi,
     private val tokenManager: TokenManager,
     private val serverRegistry: ServerRegistry? = null,
+    private val notificationsRepository: NotificationsRepository? = null,
+    private val requestsRepository: RequestsRepository? = null,
 ) {
     /** Lists all profiles for the current user. */
     open suspend fun listProfiles(): ApiResult<List<Profile>> =
@@ -68,6 +70,8 @@ open class ProfileRepository(
         if (activeServerId != null) {
             serverRegistry?.setProfileId(activeServerId, profileId)
         }
+        notificationsRepository?.reset()
+        requestsRepository?.reset()
     }
 
     /** Returns the currently active profile ID, if any. */

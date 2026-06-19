@@ -63,6 +63,8 @@ class PlaybackSessionLifecycle(
     @Volatile private var lastReportedPosition: Double? = null
     @Volatile private var lastReportedDuration: Double = 0.0
     @Volatile private var recoveringFromMissingSession: String? = null
+    @Volatile private var flushProgressOnStop: Boolean = true
+    @Volatile private var stopActiveSessionOnStop: Boolean = true
 
     private var reporterJob: Job? = null
     private var recoveryJob: Job? = null
@@ -82,10 +84,43 @@ class PlaybackSessionLifecycle(
         return startInternal(params)
     }
 
+    /**
+     * Hands the lifecycle a session that the caller already started. By
+     * default, the lifecycle also owns progress reporting, recovery, final
+     * progress flush, and stop. Callers that have not migrated those paths yet
+     * can adopt passively without creating a second playback session.
+     */
+    suspend fun adoptActiveSession(
+        params: StartParams,
+        session: PlaybackSessionResponse,
+        manageProgress: Boolean = true,
+        stopSessionOnStop: Boolean = true,
+    ) {
+        mutex.withLock {
+            cancelRecoveryJobs()
+            reporterJob?.cancel()
+            reporterJob = null
+            _notice.value = null
+            lastStartParams = params
+            lastReportedPosition = params.startPosition ?: session.position
+            lastReportedDuration = session.durationSeconds ?: 0.0
+            lastIsPaused = session.isPaused
+            recoveringFromMissingSession = null
+            flushProgressOnStop = manageProgress
+            stopActiveSessionOnStop = stopSessionOnStop
+            _state.value = SessionState.Active(session)
+            if (manageProgress) {
+                startProgressReporter()
+            }
+        }
+    }
+
     private suspend fun startInternal(params: StartParams): SessionState {
         _notice.value = null
         _state.value = SessionState.Loading
         lastStartParams = params
+        flushProgressOnStop = true
+        stopActiveSessionOnStop = true
 
         val profileId = profileRepository.getActiveProfileId()
         if (profileId == null) {
@@ -158,9 +193,11 @@ class PlaybackSessionLifecycle(
         // Fire the final snapshot regardless — even during Reconnecting we
         // want to durably record where the user was so a fresh login resumes
         // there.
-        flushFinalProgress()
+        if (flushProgressOnStop) {
+            flushFinalProgress()
+        }
 
-        if (sessionId != null) {
+        if (sessionId != null && stopActiveSessionOnStop) {
             when (val r = sessionManager.stopSession(sessionId)) {
                 is ApiResult.Error -> Log.w(TAG, "stopSession error: ${r.code} ${r.message}")
                 is ApiResult.NetworkError -> Log.w(TAG, "stopSession network error: ${r.exception}")
@@ -171,6 +208,8 @@ class PlaybackSessionLifecycle(
         lastReportedPosition = null
         lastReportedDuration = 0.0
         recoveringFromMissingSession = null
+        flushProgressOnStop = true
+        stopActiveSessionOnStop = true
         _notice.value = null
         _state.value = SessionState.Idle
     }
@@ -216,7 +255,7 @@ class PlaybackSessionLifecycle(
         recoveryJob?.cancel()
         recoveryJob = scope.launch {
             mutex.withLock {
-                Log.w(TAG, "Playback session $staleSessionId missing; renewing")
+                Log.w(TAG, "Playback session missing; renewing")
                 val resumePos = lastReportedPosition ?: params.startPosition
                 syncProgressSnapshot(
                     contentId = params.contentId,
@@ -262,7 +301,7 @@ class PlaybackSessionLifecycle(
                     // Success or HTTP error (incl. 401/403) both mean the
                     // server is reachable — match iOS comment "treating
                     // server as ready". Resume normal reporting.
-                    Log.i(TAG, "Health probe succeeded; resuming session ${currentSession.sessionId}")
+                    Log.i(TAG, "Health probe succeeded; resuming playback session")
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch
@@ -271,7 +310,7 @@ class PlaybackSessionLifecycle(
                 delayMs = (delayMs * 2).coerceAtMost(OUTAGE_MAX_DELAY_MS)
             }
             // Timed out before the server came back.
-            Log.w(TAG, "Outage recovery exhausted for session ${currentSession.sessionId}")
+            Log.w(TAG, "Outage recovery exhausted for playback session")
             _state.value = SessionState.Failed(OUTAGE_TIMEOUT_MESSAGE)
             _notice.value = PlayerNotice(
                 message = OUTAGE_TIMEOUT_MESSAGE,

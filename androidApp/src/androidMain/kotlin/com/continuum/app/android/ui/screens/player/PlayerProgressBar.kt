@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -17,8 +16,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
+import androidx.compose.ui.unit.sp
+import com.continuum.app.android.ui.util.formatClockTime
 
 /**
  * Seek bar with current and total time display.
@@ -32,6 +33,7 @@ fun PlayerProgressBar(
     duration: Double,
     onSeek: (Double) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     var isSeeking by remember { mutableStateOf(false) }
     var seekPosition by remember { mutableFloatStateOf(0f) }
@@ -39,9 +41,14 @@ fun PlayerProgressBar(
     val displayPosition = if (isSeeking) seekPosition else position.toFloat()
     val maxDuration = duration.toFloat().coerceAtLeast(1f)
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    // iOS bottom bar is VStack(spacing: 8): progress slider, then the time row.
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Slider(
             value = displayPosition.coerceIn(0f, maxDuration),
+            enabled = enabled,
             onValueChange = { value ->
                 isSeeking = true
                 seekPosition = value
@@ -59,38 +66,24 @@ fun PlayerProgressBar(
             modifier = Modifier.fillMaxWidth(),
         )
 
+        // iOS time row: current time left, duration right, `.caption`
+        // (~12sp) at 0.8 white opacity, monospaced digits.
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = formatTime(displayPosition.toDouble()),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
+                text = formatClockTime(displayPosition.toDouble()),
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = Color.White.copy(alpha = 0.8f),
             )
             Text(
-                text = formatTime(duration),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
+                text = formatClockTime(duration),
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = Color.White.copy(alpha = 0.8f),
             )
         }
-    }
-}
-
-/**
- * Formats seconds into HH:MM:SS or MM:SS.
- */
-internal fun formatTime(seconds: Double): String {
-    val totalSeconds = seconds.roundToInt().coerceAtLeast(0)
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val secs = totalSeconds % 60
-
-    return if (hours > 0) {
-        String.format("%d:%02d:%02d", hours, minutes, secs)
-    } else {
-        String.format("%d:%02d", minutes, secs)
     }
 }

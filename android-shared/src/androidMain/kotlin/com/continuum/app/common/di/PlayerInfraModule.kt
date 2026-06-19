@@ -1,11 +1,15 @@
 package com.continuum.app.common.di
 
+import com.continuum.app.common.player.ActivePlayerHolder
+import com.continuum.app.common.player.AudiobookSettingsStore
 import com.continuum.app.common.player.PlaybackSessionLifecycle
 import com.continuum.app.common.player.SleepTimerController
 import com.continuum.app.common.settings.AndroidPlayerSettingsStore
 import com.continuum.app.common.settings.DefaultLibraryPlaybackPrefsStore
+import com.continuum.app.common.settings.DefaultOverlayPrefsStore
 import com.continuum.app.common.settings.DefaultServerSettingsFlusher
 import com.continuum.app.common.settings.LibraryPlaybackPrefsStore
+import com.continuum.app.common.settings.OverlayPrefsStore
 import com.continuum.app.common.settings.PlayerSettingsStore
 import com.continuum.app.common.settings.ServerSettingsFlusher
 import com.continuum.app.domain.player.IntroAutoSkipController
@@ -33,6 +37,10 @@ import org.koin.dsl.module
  * lifecycle here is wired but unused until Phase 1+ migrations.
  */
 val playerInfraModule = module {
+    // Shares the active session Player with the in-process UI so the video
+    // SurfaceView can bind directly to it (proper surface lifecycle for MPV).
+    single { ActivePlayerHolder() }
+
     // Long-lived application-scope flusher: debounced server writes survive
     // ViewModel teardown. Uses Dispatchers.IO since flushOne does network work.
     single<ServerSettingsFlusher> {
@@ -77,6 +85,32 @@ val playerInfraModule = module {
     single<LibraryPlaybackPrefsStore> {
         DefaultLibraryPlaybackPrefsStore(
             repository = get<LibraryPlaybackPrefsRepository>(),
+        )
+    }
+
+    // Cached card-overlay configuration (admin enable flag + resolved prefs).
+    // Long-lived application scope so its coalesced writes survive view
+    // teardown, matching the other settings stores in this module.
+    single<OverlayPrefsStore> {
+        DefaultOverlayPrefsStore(
+            repository = get<SettingsRepository>(),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        )
+    }
+
+    // Local, per-profile audiobook playback preferences (skip interval,
+    // default speed, audio-processing toggles). Device-local — no server
+    // flush — so it only needs the active profile and a profile-change signal.
+    single {
+        val registry = get<ServerRegistry>()
+        val profileChangeSignal = registry.activeEntry
+            .map { it?.profileId }
+            .distinctUntilChanged()
+            .map { Unit }
+        AudiobookSettingsStore(
+            context = androidContext(),
+            getActiveProfileId = { get<ProfileRepository>().getActiveProfileId() },
+            profileChangeSignal = profileChangeSignal,
         )
     }
 

@@ -4,19 +4,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -24,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -33,10 +39,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.continuum.app.android.R
 import com.continuum.app.android.ui.screens.profiles.ProfileAvatar
 import com.continuum.app.model.profile.Profile
+import com.continuum.app.repository.NotificationsRepository
+import org.koin.compose.koinInject
 
 val MainAppHeaderContentPadding = 104.dp
 
@@ -46,6 +57,9 @@ fun MainAppTopBar(
     isProfileLoading: Boolean,
     onSearchClick: () -> Unit,
     onPersonalListsClick: () -> Unit,
+    onCalendarClick: (() -> Unit)? = null,
+    onRequestsClick: (() -> Unit)? = null,
+    onInboxClick: (() -> Unit)? = null,
     onSettingsClick: () -> Unit,
     onSwitchProfileClick: () -> Unit,
     onSwitchServerClick: () -> Unit,
@@ -99,6 +113,25 @@ fun MainAppTopBar(
                     )
                 }
 
+                if (onInboxClick != null) {
+                    val notificationsRepository = koinInject<NotificationsRepository>()
+                    val unreadCount by notificationsRepository.unreadCount.collectAsState()
+                    HeaderActionButton(onClick = onInboxClick) {
+                        BadgedBox(
+                            badge = {
+                                if (unreadCount > 0) {
+                                    Badge { Text(if (unreadCount > 99) "99+" else unreadCount.toString()) }
+                                }
+                            },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Notifications,
+                                contentDescription = "Notifications",
+                            )
+                        }
+                    }
+                }
+
                 Box {
                     HeaderActionButton(
                         onClick = { menuExpanded = true },
@@ -137,6 +170,30 @@ fun MainAppTopBar(
                                 onPersonalListsClick()
                             },
                         )
+                        if (onCalendarClick != null) {
+                            DropdownMenuItem(
+                                text = { Text("Calendar") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.CalendarMonth,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onCalendarClick()
+                                },
+                            )
+                        }
+                        if (onRequestsClick != null) {
+                            DropdownMenuItem(
+                                text = { Text("Requests") },
+                                onClick = {
+                                    menuExpanded = false
+                                    onRequestsClick()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Settings") },
                             onClick = {
@@ -194,37 +251,16 @@ private fun HeaderActionButton(
 }
 
 @Composable
-fun ContinuumWordmark(modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.58f),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = androidx.compose.foundation.BorderStroke(
-                width = 1.dp,
-                color = Color.White.copy(alpha = 0.05f),
-            ),
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = "Silo",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = "Media",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
+fun ContinuumWordmark(
+    modifier: Modifier = Modifier,
+    width: Dp = 72.dp,
+) {
+    androidx.compose.foundation.Image(
+        painter = painterResource(id = R.drawable.silo_wordmark),
+        contentDescription = "Silo",
+        contentScale = ContentScale.Fit,
+        modifier = modifier
+            .width(width)
+            .height(width * 0.52f),
+    )
 }

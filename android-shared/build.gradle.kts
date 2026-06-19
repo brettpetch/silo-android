@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.compose.multiplatform)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.androidx.room)
 }
 
 kotlin {
@@ -43,6 +45,7 @@ kotlin {
             // SubtitleManager.applyAppearance reaches into PlayerView.subtitleView
             // and CaptionStyleCompat — both live in media3-ui.
             implementation(libs.media3.ui)
+            implementation(libs.libmpv)
 
             // Media3 FFmpeg audio decoder extension. Shipped as a private
             // AAR built by scripts/build-ffmpeg-aar.sh — Google doesn't
@@ -61,8 +64,29 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.koin.android)
 
+            // Lifecycle ViewModel (KMP). The audiobook ViewModel lives here so
+            // both the phone and TV apps can consume it; `shared` pulls this in
+            // only as `implementation`, so it is not transitively visible.
+            implementation(libs.lifecycle.viewmodel.kmp)
+
             // Serialization (media auth refresh path encodes RefreshRequest / decodes RefreshResponse)
             implementation(libs.kotlinx.serialization.json)
+
+            // WorkManager — used by DownloadWorker. Phone app installs the
+            // KoinWorkerFactory; TV app does the same for its own workers.
+            implementation(libs.androidx.work.runtime.ktx)
+
+            // Room — offline-first persistence (Track B). The KSP compiler is
+            // wired below via the kspAndroid configuration; the Room Gradle
+            // plugin (applied above) drives schema export to $projectDir/schemas.
+            implementation(libs.androidx.room.runtime)
+            implementation(libs.androidx.room.ktx)
+
+            // BouncyCastle — TLS-PSK server for the LAN companion-pairing
+            // receiver (TV). Android's stdlib JSSE does not expose PSK cipher
+            // suites, so the receiver drives TlsServerProtocol / PSKTlsServer.
+            implementation(libs.bouncycastle.prov)
+            implementation(libs.bouncycastle.tls)
         }
 
         // First tests in this module — JUnit 4 via kotlin-test-junit, which
@@ -75,6 +99,19 @@ kotlin {
             implementation(kotlin("test"))
             implementation(kotlin("test-junit"))
             implementation(libs.kotlinx.coroutines.test)
+
+            // Room DAO tests run under Robolectric — Room's in-memory builder
+            // needs a real android.content.Context (ApplicationProvider) and a
+            // SQLite implementation, neither of which the default unit-test
+            // stubs provide. androidx-test-core supplies ApplicationProvider.
+            implementation(libs.androidx.test.core)
+            implementation(libs.robolectric)
+
+            // SyncEngine tests drive a real PersonalDataApi over a MockEngine
+            // HttpClient to exercise the outbox drain end-to-end.
+            implementation(libs.ktor.client.mock)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.json)
         }
     }
 }
@@ -83,7 +120,7 @@ android {
     namespace = "com.continuum.app.common"
     compileSdk = 36
     defaultConfig {
-        minSdk = 26
+        minSdk = 24
         // Gate for preferring FFmpeg audio decoders over platform decoders.
         // The AAR is always on the classpath (see dependencies above); this
         // flag only controls whether DefaultRenderersFactory is set to
@@ -100,6 +137,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
+        isCoreLibraryDesugaringEnabled = true
     }
     testOptions {
         unitTests {
@@ -108,4 +146,19 @@ android {
             isReturnDefaultValues = true
         }
     }
+}
+
+// Room schema export — the generated JSON schemas are committed under
+// android-shared/schemas/ and are the source of truth for migration tests.
+room {
+    schemaDirectory("$projectDir/schemas")
+}
+
+dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+
+    // Room annotation processor. KSP for the KMP androidTarget is configured
+    // through the kspAndroid configuration (not plain `ksp(...)`); the plain
+    // accessor isn't created for multiplatform modules.
+    add("kspAndroid", libs.androidx.room.compiler)
 }

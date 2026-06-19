@@ -9,6 +9,7 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -44,13 +45,17 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
+import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Glass-capsule scrubber matching `iosApp/.../tvOS/TVPlayerScrubber.swift`.
@@ -90,6 +95,9 @@ fun TvPlayerScrubber(
     scrubPreviewSec: Double,
     chapters: List<ChapterInfo>,
     cancelOnBlur: Boolean,
+    // Intro / skip region [startSec, endSec] drawn as a cyan band on the track
+    // when known (mirrors tvOS TVPlayerScrubber.introRegion). Null = no band.
+    introRangeSec: ClosedRange<Double>? = null,
     onSkipBack: () -> Unit,
     onSkipForward: () -> Unit,
     onBeginScrub: () -> Unit,
@@ -192,30 +200,51 @@ fun TvPlayerScrubber(
     } else 0f
 
     val trackHeight by animateDpAsState(
-        targetValue = if (isTimelineScrubbing) 12.dp else 7.dp,
+        targetValue = if (isTimelineScrubbing) 6.dp else 3.5.dp,
         animationSpec = tween(120),
         label = "scrubberTrackHeight",
     )
     val puckSize by animateDpAsState(
         targetValue = when {
-            isTimelineScrubbing -> 42.dp
-            isFocused -> 42.dp
-            else -> 30.dp
+            isTimelineScrubbing -> 21.dp
+            isFocused -> 21.dp
+            else -> 15.dp
         },
         animationSpec = tween(120),
         label = "scrubberPuckSize",
     )
 
-    Box(modifier = modifier.height(64.dp)) {
-        // Auto-seek visualization is owned by [TvHoldSeekIndicator] rendered
-        // by the parent overlay so it can float top-center above the
-        // transport instead of crowding the scrubber.
+    Column(
+        modifier = modifier.height(41.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = formatScrubberTime(positionSec),
+                color = Color.White.copy(alpha = 0.82f),
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            )
+            Text(
+                text = formatRemainingTime(durationSec - positionSec),
+                color = Color.White.copy(alpha = 0.70f),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+
+        Box(modifier = Modifier.weight(1f)) {
+            // Auto-seek visualization is owned by [TvHoldSeekIndicator] rendered
+            // by the parent overlay so it can float top-center above the
+            // transport instead of crowding the scrubber.
 
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.Center)
-                .height(56.dp)
+                .height(28.dp)
                 .focusRequester(onRequestFocus)
                 .onFocusChanged { /* state collected via interactionSource */ }
                 .focusable(interactionSource = interactionSource)
@@ -269,7 +298,10 @@ fun TvPlayerScrubber(
                             if (autoSeekRate != 0) {
                                 bumpRate(1)
                             } else if (isTimelineScrubbing) {
-                                onUpdateScrub(scrubPreviewSec + 10.0)
+                                // Forward nudge matches the 30s transport skip
+                                // (back nudge stays 10s), mirroring tvOS
+                                // scrubForwardStep/scrubBackwardStep.
+                                onUpdateScrub(scrubPreviewSec + 30.0)
                             } else {
                                 onSkipForward()
                             }
@@ -314,6 +346,7 @@ fun TvPlayerScrubber(
             val barWidthDp = maxWidth
             val density = LocalDensity.current
             val barWidthPx = with(density) { barWidthDp.toPx() }
+            val puckSizePx = with(density) { puckSize.toPx() }
 
             // Track (unfocused 0.24, focused 0.35, scrubbing 0.48 — spec).
             Box(
@@ -332,6 +365,29 @@ fun TvPlayerScrubber(
                         ),
                     ),
             )
+
+            // Intro / skip region — cyan band on the track (tvOS introRegion).
+            // Drawn above the bare track but below the played fill / ticks so
+            // the playhead still reads clearly over it.
+            if (introRangeSec != null && durationSec > 0) {
+                val introStart = (introRangeSec.start / durationSec).toFloat().coerceIn(0f, 1f)
+                val introEnd = (introRangeSec.endInclusive / durationSec).toFloat().coerceIn(0f, 1f)
+                if (introEnd > introStart) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .offset(x = barWidthDp * introStart)
+                            .fillMaxWidth(introEnd - introStart)
+                            .height(trackHeight)
+                            .clip(RoundedCornerShape(percent = 50))
+                            .background(
+                                Color.Cyan.copy(
+                                    alpha = if (isTimelineScrubbing || isFocused) 0.45f else 0.34f,
+                                ),
+                            ),
+                    )
+                }
+            }
 
             // Played fill — pure white, follows the preview while scrubbing.
             Box(
@@ -358,7 +414,7 @@ fun TvPlayerScrubber(
                 )
             }
 
-            // Chapter ticks — skip the chapter-0 tick at x≈0 so it doesn't
+            // Chapter marker ticks — skip the chapter-0 tick at x≈0 so it doesn't
             // sit under the capsule endcap. Iterate with `for` (rather than
             // `forEach`) so the lambda body keeps composable scope.
             if (durationSec > 0) {
@@ -369,9 +425,10 @@ fun TvPlayerScrubber(
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .offset(x = barWidthDp * frac - 1.5.dp)
-                                .width(if (isTimelineScrubbing) 4.dp else 3.dp)
-                                .height(trackHeight + 14.dp)
-                                .background(Color.White.copy(alpha = 0.85f)),
+                                .width(if (isTimelineScrubbing) 3.dp else 2.dp)
+                                .height(trackHeight + 8.dp)
+                                .clip(RoundedCornerShape(percent = 50))
+                                .background(Color.White.copy(alpha = 0.45f)),
                         )
                     }
                 }
@@ -383,11 +440,12 @@ fun TvPlayerScrubber(
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
-                        .offset(
-                            x = with(density) {
-                                (barWidthPx * totalProgress - puckSize.toPx() / 2f).toDp()
-                            },
-                        )
+                        .offset {
+                            IntOffset(
+                                x = (barWidthPx * totalProgress - puckSizePx / 2f).roundToInt(),
+                                y = 0,
+                            )
+                        }
                         .size(puckSize)
                         .shadow(8.dp, CircleShape, clip = false)
                         .clip(CircleShape)
@@ -398,3 +456,18 @@ fun TvPlayerScrubber(
     }
 }
 
+}
+
+private fun formatScrubberTime(seconds: Double): String = formatTimelineClock(seconds)
+
+private fun formatRemainingTime(secondsRemaining: Double): String =
+    "-${formatTimelineClock(secondsRemaining.coerceAtLeast(0.0))}"
+
+private fun formatTimelineClock(seconds: Double): String {
+    if (seconds <= 0 || seconds.isNaN()) return "0:00"
+    val total = seconds.toInt()
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}

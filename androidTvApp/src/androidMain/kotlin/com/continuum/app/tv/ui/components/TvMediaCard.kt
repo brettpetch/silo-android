@@ -29,6 +29,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -38,13 +39,16 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.continuum.app.common.overlays.CardOverlayVariant
+import com.continuum.app.common.overlays.CardOverlays
+import com.continuum.app.common.overlays.LocalCardOverlayUiState
 import com.continuum.app.model.catalog.MediaItemUserState
-import com.continuum.app.tv.ui.theme.ContinuumBlue
-import com.continuum.app.tv.ui.theme.DarkOnPrimary
+import com.continuum.app.overlays.OverlayData
 import com.continuum.app.tv.ui.theme.ProgressTrack
 import com.continuum.app.tv.ui.theme.ProgressFill
-import com.continuum.app.tv.ui.theme.SelectedContainer
+import com.continuum.app.tv.ui.theme.RowDimens
 import com.continuum.app.tv.ui.theme.continuumCardDefaults
+import com.continuum.app.tv.ui.util.tvArtworkAspectRatioForMediaType
 
 /**
  * The core focusable media card used throughout the TV app.
@@ -69,13 +73,20 @@ fun TvMediaCard(
     year: Int? = null,
     userState: MediaItemUserState? = null,
     progress: Float? = null,
+    mediaType: String? = null,
     width: Dp = TvCardWidth,
     fillWidth: Boolean = false,
+    artworkAspectRatio: Float? = null,
     focusRequester: FocusRequester? = null,
     cardModifier: Modifier = Modifier,
+    overlay: OverlayData? = null,
     actions: TvMediaCardActions = TvMediaCardActions(),
 ) {
-    val height = width * 3f / 2f
+    val overlayState = LocalCardOverlayUiState.current
+    val effectiveAspectRatio = artworkAspectRatio
+        ?: tvArtworkAspectRatioForMediaType(mediaType)
+        ?: (2f / 3f)
+    val height = width / effectiveAspectRatio
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
@@ -103,7 +114,7 @@ fun TvMediaCard(
                 cardModifier
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .fillMaxWidth()
-                    .aspectRatio(2f / 3f)
+                    .aspectRatio(effectiveAspectRatio)
             } else {
                 cardModifier
                     .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
@@ -119,20 +130,33 @@ fun TvMediaCard(
                     modifier = Modifier.fillMaxSize(),
                 )
 
+                // Card-overlay badge layer. Over the poster, under the
+                // watched badge + progress bar. Never intercepts focus.
+                if (overlayState.enabled && overlay != null) {
+                    CardOverlays(
+                        data = overlay,
+                        prefs = overlayState.prefs,
+                        variant = CardOverlayVariant.Poster,
+                        scale = TvCardOverlayScale,
+                        forceOpaqueBackground = true,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
                 if (userState?.played == true) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .size(12.dp)
-                            .background(ContinuumBlue, CircleShape),
+                            .padding(12.dp)
+                            .size(40.dp)
+                            .background(Color.White, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = "Watched",
-                            tint = DarkOnPrimary,
-                            modifier = Modifier.size(7.dp),
+                            tint = Color.Black,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }
@@ -156,7 +180,7 @@ fun TvMediaCard(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
             text = title,
@@ -168,6 +192,7 @@ fun TvMediaCard(
             },
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -176,6 +201,7 @@ fun TvMediaCard(
                 text = year.toString(),
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.70f),
+                textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -192,8 +218,10 @@ fun TvMediaCard(
 }
 
 /**
- * Default width used by the TV media card. 200dp matches the tvOS poster size
- * (260×390pt at scale per `RowDimens.PosterWidth`) — the spec calls for
- * 200×300dp posters across rows and grids on Android TV.
+ * Default width used by the TV media card. tvOS uses 260×390pt; Skyline maps
+ * that to Android TV as 130×195dp.
  */
-val TvCardWidth: Dp = 130.dp
+val TvCardWidth: Dp = RowDimens.PosterWidth
+
+/** Optical TV scale: compact like tvOS badges, still readable at sofa distance. */
+const val TvCardOverlayScale: Float = 0.7f

@@ -3,6 +3,7 @@ package com.continuum.app.model.section
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import com.continuum.app.model.catalog.MediaItemUserState
+import com.continuum.app.model.catalog.OverlaySummary
 
 @Serializable
 data class SectionItem(
@@ -17,6 +18,16 @@ data class SectionItem(
     val genres: List<String> = emptyList(),
     val status: String? = null,
     @SerialName("rating_imdb") val ratingImdb: Double? = null,
+    @SerialName("rating_tmdb") val ratingTmdb: Double? = null,
+    @SerialName("rating_rt_critic") val ratingRtCritic: Int? = null,
+    @SerialName("rating_rt_audience") val ratingRtAudience: Int? = null,
+    @SerialName("content_rating") val contentRating: String? = null,
+    val runtime: Int? = null,
+    @SerialName("original_language") val originalLanguage: String? = null,
+    val studios: List<String> = emptyList(),
+    val networks: List<String> = emptyList(),
+    @SerialName("show_status") val showStatus: String? = null,
+    @SerialName("overlay_summary") val overlaySummary: OverlaySummary? = null,
     val overview: String? = null,
     @SerialName("item_source") val itemSource: String? = null,
     @SerialName("position_seconds") val positionSeconds: Double? = null,

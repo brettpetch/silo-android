@@ -23,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon as M3Icon
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,11 +40,15 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.continuum.app.model.catalog.BrowseItem
 import com.continuum.app.tv.ui.components.TvCatalogGrid
 import com.continuum.app.tv.ui.components.TvFilterChip
+import com.continuum.app.tv.ui.components.tvOutlinedTextFieldColors
+import com.continuum.app.tv.ui.shell.TvTopMenuLayout
 import com.continuum.app.tv.ui.theme.ContinuumBlue
 import com.continuum.app.tv.ui.theme.ContinuumBlueBorderIdle
 import com.continuum.app.tv.ui.theme.ElevatedSurface
@@ -58,7 +61,7 @@ import org.koin.compose.viewmodel.koinViewModel
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun TvSearchScreen(
-    onItemClick: (contentId: String) -> Unit,
+    onResultClick: (BrowseItem) -> Unit,
     searchFieldFocusRequester: FocusRequester? = null,
     viewModel: TvSearchViewModel = koinViewModel(),
 ) {
@@ -89,14 +92,15 @@ fun TvSearchScreen(
             items = state.items,
             isLoading = state.isLoading || state.isLoadingMore,
             hasMore = state.hasMore,
-            onItemClick = onItemClick,
+            onItemClick = { },
+            onBrowseItemClick = onResultClick,
             onLoadMore = viewModel::loadMore,
             modifier = Modifier.fillMaxSize(),
             minCellWidth = 152.dp,
             contentPadding = tvPageContentPadding(
-                top = Spacing.xs,
+                top = TvTopMenuLayout.contentTopInset,
                 bottom = Spacing.xxxl,
-                end = 48.dp,
+                end = 24.dp,
                 expandedGap = Spacing.md,
             ),
             horizontalSpacing = 14.dp,
@@ -112,6 +116,7 @@ fun TvSearchScreen(
                 SearchStage(
                     query = state.query,
                     mediaType = state.mediaType,
+                    availableMediaTypes = state.availableMediaTypes,
                     resultStatus = searchStatusText(
                         query = state.query,
                         total = state.total,
@@ -142,7 +147,7 @@ fun TvSearchScreen(
                     )
                     else -> SearchFeedbackCard(
                         title = "No matches for “${state.query}”",
-                        body = "Try a shorter title or switch between Movies and Series.",
+                        body = "Try a shorter title or switch media filters.",
                     )
                 }
             },
@@ -155,6 +160,7 @@ fun TvSearchScreen(
 private fun SearchStage(
     query: String,
     mediaType: TvSearchMediaType,
+    availableMediaTypes: List<TvSearchMediaType>,
     resultStatus: String?,
     hasResults: Boolean,
     searchFieldFocusRequester: FocusRequester,
@@ -168,18 +174,18 @@ private fun SearchStage(
     val startPadding = tvPageStartPadding(expandedGap = Spacing.md)
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val mediaTypes = remember { TvSearchMediaType.values().toList() }
+    val mediaTypes = availableMediaTypes
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(
                 start = startPadding,
-                end = 48.dp,
-                top = Spacing.md,
+                end = 24.dp,
+                top = 0.dp,
                 bottom = Spacing.xs,
             )
-            .widthIn(max = 760.dp),
+            .widthIn(max = 380.dp),
         verticalArrangement = Arrangement.spacedBy(Spacing.xs),
     ) {
         Row(
@@ -210,11 +216,22 @@ private fun SearchStage(
             },
             placeholder = {
                 androidx.compose.material3.Text(
-                    text = "Search titles, movies, and series",
-                    color = Color.White.copy(alpha = 0.44f),
+                    text = "Search titles, movies, series, and audiobooks",
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 16.sp,
+                        lineHeight = 16.sp,
+                        letterSpacing = 0.sp,
+                    ),
+                    color = Color.White.copy(alpha = 0.56f),
                 )
             },
             singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = 16.sp,
+                lineHeight = 16.sp,
+                letterSpacing = 0.sp,
+                color = Color.White,
+            ),
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
                 imeAction = ImeAction.Search,
@@ -231,19 +248,16 @@ private fun SearchStage(
                     }
                 },
             ),
-            colors = OutlinedTextFieldDefaults.colors(
+            colors = tvOutlinedTextFieldColors(
                 focusedContainerColor = ElevatedSurface,
                 unfocusedContainerColor = ElevatedSurface,
-                focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                cursorColor = MaterialTheme.colorScheme.onBackground,
-                focusedBorderColor = Color.White.copy(alpha = 0.18f),
+                focusedBorderColor = Color.White.copy(alpha = 0.34f),
                 unfocusedBorderColor = ContinuumBlueBorderIdle,
             ),
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(9.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(31.dp)
                 .focusRequester(searchFieldFocusRequester)
                 // Pin DOWN to the chip rail so the user can always step from
                 // the search field onto the All/Movies/Series filters,
@@ -256,7 +270,10 @@ private fun SearchStage(
             contentPadding = PaddingValues(end = Spacing.xs),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            itemsIndexed(mediaTypes) { index, type ->
+            itemsIndexed(
+                mediaTypes,
+                contentType = { _, _ -> "media-type-chip" },
+            ) { index, type ->
                 val chipModifier = Modifier
                     .then(
                         if (index == 0) {
@@ -311,22 +328,22 @@ private fun SearchFeedbackCard(
     body: String,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(24.dp)
+    val shape = RoundedCornerShape(12.dp)
 
     Box(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
-                .widthIn(max = 680.dp)
+                .widthIn(max = 340.dp)
                 .clip(shape)
                 .background(ElevatedSurface)
                 .border(1.dp, Color.White.copy(alpha = 0.05f), shape)
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(18.dp)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.06f)),
                 contentAlignment = Alignment.Center,

@@ -2,6 +2,7 @@ package com.continuum.app.tv.ui.screens.detail
 
 import com.continuum.app.model.catalog.FileVersion
 import com.continuum.app.model.catalog.ItemDetail
+import com.continuum.app.model.catalog.isAudiobookItemType
 import kotlin.math.round
 
 /**
@@ -11,15 +12,28 @@ import kotlin.math.round
  */
 internal object TvDetailMetadata {
 
-    fun sourceTokens(detail: ItemDetail): List<String> = when (detail.type.lowercase()) {
-        "episode" -> buildList {
+    fun sourceTokens(detail: ItemDetail): List<String> = when {
+        detail.type.equals("episode", ignoreCase = true) -> buildList {
             episodeNumberLabel(detail)?.let { add(it) }
             detail.genres.firstOrNull { it.isNotBlank() }?.let { add(it) }
         }
-        "series" -> buildList {
+        detail.type.equals("series", ignoreCase = true) -> buildList {
             add("TV Show")
             detail.genres.filter { it.isNotBlank() }.take(2).forEach { add(it) }
         }
+        detail.type.equals("season", ignoreCase = true) -> buildList {
+            // tvOS `TVSeasonDetailView.sourceTokens`: leading episode-count token,
+            // then up to two genres.
+            detail.episodeCount?.takeIf { it > 0 }?.let {
+                add("$it Episode${if (it == 1) "" else "s"}")
+            }
+            detail.genres.filter { it.isNotBlank() }.take(2).forEach { add(it) }
+        }
+        isAudiobookItemType(detail.type) -> listOfNotNull(
+            "Audiobook",
+            detail.audiobook?.publisher,
+            detail.audiobook?.narratorNames?.let { "Narrated by $it" },
+        )
         else -> buildList {
             add(typeLabel(detail))
             detail.genres.filter { it.isNotBlank() }.take(2).forEach { add(it) }
@@ -51,6 +65,11 @@ internal object TvDetailMetadata {
         if (detail.type.equals("episode", ignoreCase = true)) {
             return detail.seriesTitle?.trim()?.takeIf { it.isNotEmpty() }
         }
+        if (detail.type.equals("season", ignoreCase = true)) {
+            // tvOS `TVSeasonDetailView`: the season hero eyebrow carries the
+            // parent-series title.
+            return detail.seriesTitle?.trim()?.takeIf { it.isNotEmpty() }
+        }
         if (detail.type.equals("series", ignoreCase = true)) {
             when (detail.status?.trim()?.lowercase()) {
                 "continuing", "returning series", "returning" -> return "Continuing Series"
@@ -70,11 +89,15 @@ internal object TvDetailMetadata {
         return "Starring ${names.joinToString(", ")}"
     }
 
-    private fun typeLabel(detail: ItemDetail): String = when (detail.type.lowercase()) {
-        "movie" -> "Movie"
-        "series" -> "TV Show"
-        "episode" -> "Episode"
-        else -> detail.type.replaceFirstChar { it.titlecase() }
+    private fun typeLabel(detail: ItemDetail): String = when {
+        isAudiobookItemType(detail.type) -> "Audiobook"
+        else -> when (detail.type.lowercase()) {
+            "movie" -> "Movie"
+            "series" -> "Series"
+            "season" -> "Season"
+            "episode" -> "Episode"
+            else -> detail.type.replaceFirstChar { it.titlecase() }
+        }
     }
 
     private fun episodeNumberLabel(detail: ItemDetail): String? {

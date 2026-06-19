@@ -11,11 +11,16 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
-import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import com.continuum.app.common.BuildConfig
+import com.continuum.app.common.player.audio.DelayAudioProcessor
+import com.continuum.app.common.player.mpv.MpvPlayer
+import com.continuum.app.common.player.subtitle.OffsetSubtitleParserFactory
+import com.continuum.app.common.player.subtitle.SubtitleOffsetHolder
 import com.continuum.app.model.playback.AudioPassthroughCapabilities
 import com.continuum.app.model.playback.HdrCapabilities
 import com.continuum.app.model.playback.PlayMethod
@@ -41,22 +46,29 @@ class ContinuumPlayerFactory(
     private val tokenManager: TokenManager,
     private val subtitleManager: SubtitleManager,
     okHttpClient: okhttp3.OkHttpClient,
+    private val delayProcessor: DelayAudioProcessor,
+    private val subtitleOffsetHolder: SubtitleOffsetHolder,
 ) {
     val isTv: Boolean = TvModeDetector.isTv(context)
 
     private var serverUrl: String = ""
 
     private val dataSourceFactory = AuthenticatedDataSourceFactory(
+        context = context,
         okHttpClient = okHttpClient,
         tokenManager = tokenManager,
         serverUrlProvider = { serverUrl },
     )
 
+    private val subtitleParserFactory = OffsetSubtitleParserFactory(subtitleOffsetHolder)
+
     private val extractorsFactory = DefaultExtractorsFactory()
         // Media3 1.10 expects parsed cue samples by default. Forcing raw
         // subtitle payloads here makes SRT/ASS tracks crash the text renderer
-        // on Android TV with "Legacy decoding is disabled".
-        .setSubtitleParserFactory(DefaultSubtitleParserFactory())
+        // on Android TV with "Legacy decoding is disabled". The offset wrapper
+        // delegates to DefaultSubtitleParserFactory and shifts cue start times
+        // by the per-profile subtitle-sync value (A.3f).
+        .setSubtitleParserFactory(subtitleParserFactory)
 
     fun createPlayer(
         preferFfmpegAudio: Boolean = BuildConfig.FFMPEG_AUDIO_ENABLED,
@@ -78,9 +90,28 @@ class ContinuumPlayerFactory(
         } else {
             DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
         }
-        val renderersFactory = DefaultRenderersFactory(context)
-            .setExtensionRendererMode(extensionMode)
-            .setEnableDecoderFallback(true)
+
+        // Build a single-processor chain that hosts the per-profile audio
+        // delay processor. The chain is owned by the factory and shared
+        // across players because Koin gives us a single DelayAudioProcessor
+        // instance; in practice ContinuumPlaybackService creates exactly
+        // one ExoPlayer per process so there's no contention.
+        val audioSink: AudioSink = DefaultAudioSink.Builder(context)
+            .setAudioProcessorChain(
+                DefaultAudioSink.DefaultAudioProcessorChain(delayProcessor),
+            )
+            .build()
+
+        val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean,
+            ): AudioSink = audioSink
+        }.apply {
+            setExtensionRendererMode(extensionMode)
+            setEnableDecoderFallback(true)
+        }
 
         val trackSelector = DefaultTrackSelector(context).apply {
             parameters = buildUponParameters()
@@ -95,19 +126,23 @@ class ContinuumPlayerFactory(
 
         val mediaSourceFactory = DefaultMediaSourceFactory(context, extractorsFactory)
             .setDataSourceFactory(dataSourceFactory)
+            .setSubtitleParserFactory(subtitleParserFactory)
 
-        // 4K HDR bitrates can chew through default buffers on the first
-        // few segments — 60 s min / 120 s max gives headroom, and
-        // prioritizing time over size keeps the pre-buffer bounded when
-        // the network briefly spikes.
+        // Staged buffer: start once a modest cushion is ready, wait longer
+        // after an actual stall, and let playback grow a deeper forward
+        // buffer in the background. A finite byte cap lets low-bitrate
+        // streams grow toward the time limit while preventing high-bitrate
+        // remuxes from filling the app heap on memory-constrained TVs.
+        val bufferPolicy = PlaybackBufferPolicy.forMode(PlaybackBufferMode.SmoothPlayback)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 60_000,
-                /* maxBufferMs = */ 120_000,
-                /* bufferForPlaybackMs = */ 2_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 5_000,
+                /* minBufferMs = */ bufferPolicy.minBufferMs,
+                /* maxBufferMs = */ bufferPolicy.maxBufferMs,
+                /* bufferForPlaybackMs = */ bufferPolicy.bufferForPlaybackMs,
+                /* bufferForPlaybackAfterRebufferMs = */ bufferPolicy.bufferForPlaybackAfterRebufferMs,
             )
-            .setPrioritizeTimeOverSizeThresholds(true)
+            .setTargetBufferBytes(bufferPolicy.targetBufferBytes)
+            .setPrioritizeTimeOverSizeThresholds(bufferPolicy.prioritizeTimeOverSizeThresholds)
             .build()
 
         val builder = ExoPlayer.Builder(context, renderersFactory)
@@ -134,6 +169,35 @@ class ContinuumPlayerFactory(
     }
 
     /**
+     * Builds an [MpvPlayer] with auth headers pre-fetched on the calling
+     * coroutine. The suspend call resolves credentials before player
+     * construction begins, so the synchronous [MpvPlayer.Builder.build] path
+     * never blocks a thread waiting for I/O — eliminating the ANR risk that
+     * a blocking call would introduce on slow Android-7 CPUs.
+     */
+    suspend fun createMpvPlayer(): Player {
+        val headers = buildMpvHttpHeaderFields()
+        return MpvPlayer.Builder(context)
+            .setHttpHeaderFieldsProvider { headers }
+            .setSeekBackIncrementMs(10_000)
+            .setSeekForwardIncrementMs(30_000)
+            .build()
+    }
+
+    private suspend fun buildMpvHttpHeaderFields(): List<Pair<String, String>> =
+        buildList {
+            tokenManager.getAccessToken()?.takeIf { it.isNotBlank() }?.let { accessToken ->
+                add("Authorization" to "Bearer $accessToken")
+            }
+            tokenManager.getProfileId()?.takeIf { it.isNotBlank() }?.let { profileId ->
+                add("X-Profile-Id" to profileId)
+            }
+            tokenManager.getProfileToken()?.takeIf { it.isNotBlank() }?.let { profileToken ->
+                add("X-Profile-Token" to profileToken)
+            }
+        }
+
+    /**
      * Apply capability-aware track selection presets to [player]. Call at
      * player construction and again whenever [AudioPassthroughCapabilities]
      * changes (HDMI hot-plug, BT pair, user-toggled "force Atmos" setting).
@@ -144,6 +208,7 @@ class ContinuumPlayerFactory(
         displayHdr: HdrCapabilities = HdrCapabilities(),
         preferredAudioLanguage: String? = null,
         preferredTextLanguage: String? = null,
+        hdrEnabled: Boolean = true,
     ) {
         val base = player.trackSelectionParameters
         val next = if (isTv) {
@@ -154,6 +219,7 @@ class ContinuumPlayerFactory(
                 displayHdr = displayHdr,
                 preferredAudioLanguage = preferredAudioLanguage,
                 preferredTextLanguage = preferredTextLanguage,
+                allowHdr = hdrEnabled,
             )
         } else {
             TrackSelectionPresets.buildPhoneParameters(
@@ -182,7 +248,12 @@ class ContinuumPlayerFactory(
         streamUrl: String,
         playMethod: PlayMethod,
         serverUrl: String,
+        container: String? = null,
         subtitles: List<PlayerSubtitleInfo> = emptyList(),
+        title: String? = null,
+        subtitle: String? = null,
+        artworkUrl: String? = null,
+        durationMs: Long? = null,
     ): MediaItem {
         this.serverUrl = serverUrl
         val absoluteUrl = buildAbsoluteUrl(serverUrl, streamUrl)
@@ -193,20 +264,75 @@ class ContinuumPlayerFactory(
             .setUri(absoluteUrl)
             .setSubtitleConfigurations(subtitleConfigurations)
 
+        // Now Playing metadata — drives the system media notification + lock
+        // screen via MediaSession. Title/subtitle/artwork are all optional so
+        // existing callers compile unchanged; when provided, the OS surfaces
+        // them on lock screen, Bluetooth devices, and Wear watchfaces. Mirrors
+        // iOS's NowPlayingController (iosApp/Screens/Player/NowPlayingController.swift).
+        if (title != null || subtitle != null || artworkUrl != null || durationMs != null) {
+            val metadataBuilder = androidx.media3.common.MediaMetadata.Builder()
+            title?.let { metadataBuilder.setTitle(it) }
+            subtitle?.let {
+                metadataBuilder.setSubtitle(it)
+                metadataBuilder.setArtist(it)
+            }
+            artworkUrl?.takeIf { it.isNotBlank() }
+                ?.let { metadataBuilder.setArtworkUri(android.net.Uri.parse(it)) }
+            durationMs?.let { metadataBuilder.setDurationMs(it) }
+            builder.setMediaMetadata(metadataBuilder.build())
+        }
+
         when (playMethod) {
             PlayMethod.TRANSCODE -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
-            PlayMethod.DIRECT, PlayMethod.REMUX -> Unit
+            PlayMethod.REMUX -> builder.setMimeType("video/mp4")
+            PlayMethod.DIRECT -> videoContainerMimeType(container)?.let { builder.setMimeType(it) }
         }
 
         return builder.build()
     }
 
-    private fun buildAbsoluteUrl(serverUrl: String, streamUrl: String): String {
-        val base = serverUrl.trimEnd('/')
-        return if (streamUrl.startsWith("http://") || streamUrl.startsWith("https://")) {
-            streamUrl
-        } else {
-            "$base/api/v1$streamUrl"
-        }
+    private fun buildAbsoluteUrl(serverUrl: String, streamUrl: String): String =
+        resolvePlaybackStreamUrl(serverUrl, streamUrl)
+}
+
+/**
+ * Resolves a server stream URL to an absolute, loadable URL.
+ *
+ * Already-absolute URLs (`http`/`https`) and local offline URIs
+ * (`file`/`content`) are returned unchanged. API-relative URLs are only
+ * prefixed with the server base URL; stream-relative paths are prefixed with
+ * the server base URL and the `/api/v1` mount.
+ *
+ * Shared by [ContinuumPlayerFactory] (video) and the audiobook player so both
+ * resolve identically. Players that hand a relative URI straight to Media3 hit
+ * OkHttp's "Malformed URL" because [RoutedDataSource] only prefixes the base
+ * when the factory's serverUrl is set — which the audiobook path never did.
+ */
+fun resolvePlaybackStreamUrl(serverUrl: String, streamUrl: String): String {
+    val base = serverUrl.trimEnd('/')
+    return when {
+        streamUrl.startsWith("http://") ||
+            streamUrl.startsWith("https://") ||
+            streamUrl.startsWith("file://") ||
+            streamUrl.startsWith("content://") -> streamUrl // Already absolute / local offline: nothing to prefix.
+        streamUrl.startsWith("/api/") -> "$base$streamUrl"
+        else -> "$base/api/v1$streamUrl"
+    }
+}
+
+internal fun videoContainerMimeType(container: String?): String? {
+    val normalized = container
+        ?.trim()
+        ?.trimStart('.')
+        ?.lowercase()
+        .orEmpty()
+    return when (normalized) {
+        "mkv", "matroska" -> "video/x-matroska"
+        "mp4", "m4v" -> "video/mp4"
+        "webm" -> "video/webm"
+        "mov", "qt" -> "video/quicktime"
+        "ts", "mpegts", "mpeg-ts", "m2ts" -> "video/mp2t"
+        "avi" -> "video/x-msvideo"
+        else -> null
     }
 }
