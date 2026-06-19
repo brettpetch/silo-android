@@ -43,7 +43,7 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew :androidApp:assembleDebug :androidApp:assembleRelease
+        run: ./gradlew :androidApp:assembleRelease
 
       - name: Build TV APKs
         env:
@@ -51,7 +51,7 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew :androidTvApp:assembleDebug :androidTvApp:assembleRelease
+        run: ./gradlew :androidTvApp:assembleRelease
 
       - name: Build App Bundles
         env:
@@ -65,14 +65,8 @@ jobs:
         if: github.event_name == 'push'
         run: |
           mkdir -p release-artifacts
-          for f in androidApp/build/outputs/apk/debug/*.apk; do
-            cp "$f" "release-artifacts/mobile-$(basename "$f")"
-          done
           for f in androidApp/build/outputs/apk/release/*.apk; do
             cp "$f" "release-artifacts/mobile-$(basename "$f")"
-          done
-          for f in androidTvApp/build/outputs/apk/debug/*.apk; do
-            cp "$f" "release-artifacts/tv-$(basename "$f")"
           done
           for f in androidTvApp/build/outputs/apk/release/*.apk; do
             cp "$f" "release-artifacts/tv-$(basename "$f")"
